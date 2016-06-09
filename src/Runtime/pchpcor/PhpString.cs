@@ -19,6 +19,8 @@ namespace Pchp.Core
 
         StringBuilder _builder;
 
+        public int Length => _builder.Length;
+
         #endregion
 
         #region Construction
@@ -30,6 +32,12 @@ namespace Pchp.Core
         public PhpString(int capacity)
         {
             _builder = new StringBuilder(capacity);
+        }
+
+        public PhpString(string x, string y)
+        {
+            _builder = new StringBuilder(x);
+            _builder.Append(y);
         }
 
         // from builder, binary, unicode, concatenation
@@ -96,6 +104,7 @@ namespace Pchp.Core
 
         public override string ToString()
         {
+            // TODO: save the result for repetitious ToString call
             return _builder.ToString();
         }
     }

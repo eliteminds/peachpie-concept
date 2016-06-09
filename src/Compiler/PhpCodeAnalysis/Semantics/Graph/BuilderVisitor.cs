@@ -25,7 +25,7 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
 
         public BoundBlock/*!*/Start { get; private set; }
         public BoundBlock/*!*/Exit { get; private set; }
-        public BoundBlock Exception { get; private set; }
+        //public BoundBlock Exception { get; private set; }
 
         /// <summary>
         /// Gets labels defined within the routine.
@@ -173,9 +173,10 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
 
         private BoundBlock/*!*/GetExceptionBlock()
         {
-            if (this.Exception == null)
-                this.Exception = new ExitBlock();
-            return this.Exception;
+            //if (this.Exception == null)
+            //    this.Exception = new ExitBlock();
+            //return this.Exception;
+            return this.Exit;
         }
 
         private void Add(Statement stmt)
@@ -202,7 +203,7 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
 
         private CatchBlock/*!*/NewBlock(CatchItem item)
         {
-            return WithNewOrdinal(new CatchBlock(item) { PhpSyntax = item });
+            return WithNewOrdinal(new CatchBlock(item.TypeRef, _binder.BindCatchVariable(item)) { PhpSyntax = item });
         }
 
         private CaseBlock/*!*/NewBlock(SwitchItem item)
@@ -234,6 +235,12 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
         private BoundBlock/*!*/Connect(BoundBlock/*!*/source, BoundBlock/*!*/target)
         {
             new SimpleEdge(source, target);
+            return target;
+        }
+
+        private BoundBlock/*!*/Leave(BoundBlock/*!*/source, BoundBlock/*!*/target)
+        {
+            new LeaveEdge(source, target);
             return target;
         }
 
@@ -395,13 +402,17 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
 
             // ForeachEnumereeEdge : SimpleEdge
             // x.Enumeree.GetEnumerator();
-            var enumereeEdge = new ForeachEnumereeEdge(_current, move, _binder.BindExpression(x.Enumeree, BoundAccess.Read));
+            var enumereeEdge = new ForeachEnumereeEdge(_current, move, _binder.BindExpression(x.Enumeree, BoundAccess.Read), x.ValueVariable.Alias);
 
             // ContinueTarget:
             OpenBreakScope(end, move);
 
             // ForeachMoveNextEdge : ConditionalEdge
-            var moveEdge = new ForeachMoveNextEdge(move, body, end, enumereeEdge, x.KeyVariable, x.ValueVariable);
+            var moveEdge = new ForeachMoveNextEdge(move, body, end, enumereeEdge,
+                (x.KeyVariable != null) ? (BoundReferenceExpression)_binder.BindExpression(x.KeyVariable.Variable, BoundAccess.Write) : null,
+                (BoundReferenceExpression)_binder.BindExpression(
+                    (Expression)x.ValueVariable.Variable ?? x.ValueVariable.List,
+                    x.ValueVariable.Alias ? BoundAccess.Write.WithWriteRef(FlowAnalysis.TypeRefMask.AnyType) : BoundAccess.Write));
             // while (enumerator.MoveNext()) {
             //   var key = enumerator.Current.Key
             //   var value = enumerator.Current.Value
@@ -513,7 +524,8 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
                 }
                 else
                 {
-                    Connect(_current, this.GetExceptionBlock());    // unreachable  // fatal error in PHP
+                    throw new InvalidOperationException();   // TODO: ErrCode
+                    //Connect(_current, this.GetExceptionBlock());    // unreachable  // fatal error in PHP
                 }
             }
             else
@@ -682,7 +694,7 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
             x.Statements.ForEach(VisitElement);
             CloseScope();
             CloeTryScope();
-            _current = Connect(_current, finallyBlock ?? end);
+            _current = Leave(_current, finallyBlock ?? end);
 
             // built catches
             for (int i = 0; i < catchBlocks.Length; i++)
@@ -690,7 +702,7 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
                 _current = WithOpenScope(WithNewOrdinal(catchBlocks[i]));
                 x.Catches[i].Statements.ForEach(VisitElement);
                 CloseScope();
-                _current = Connect(_current, finallyBlock ?? end);
+                _current = Leave(_current, finallyBlock ?? end);
             }
 
             // build finally
@@ -699,7 +711,7 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
                 _current = WithOpenScope(WithNewOrdinal(finallyBlock));
                 x.FinallyItem.Statements.ForEach(VisitElement);
                 CloseScope();
-                _current = Connect(_current, end);
+                _current = Leave(_current, end);
             }
 
             // _current == end

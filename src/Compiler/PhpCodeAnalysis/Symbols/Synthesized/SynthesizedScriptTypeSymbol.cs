@@ -12,7 +12,7 @@ namespace Pchp.CodeAnalysis.Symbols
     /// <summary>
     /// internal static class &lt;Script&gt; { ... }
     /// </summary>
-    class SynthesizedScriptTypeSymbol : NamedTypeSymbol
+    class SynthesizedScriptTypeSymbol : NamedTypeSymbol, IWithSynthesized
     {
         readonly PhpCompilation _compilation;
 
@@ -36,6 +36,24 @@ namespace Pchp.CodeAnalysis.Symbols
         /// </summary>
         internal MethodSymbol EnumerateScriptsSymbol => _enumerateScripsSymbol ?? (_enumerateScripsSymbol = CreateEnumerateScriptsSymbol());
         MethodSymbol _enumerateScripsSymbol;
+
+        /// <summary>
+        /// Method that enumerates all app-wide global constants.
+        /// 
+        /// EnumerateScripts(Action&lt;string name, PhpValue value, bool ignorecase&gt; callback)
+        /// </summary>
+        internal MethodSymbol EnumerateConstantsSymbol => _enumerateConstantsSymbol ?? (_enumerateConstantsSymbol = CreateEnumerateConstantsSymbol());
+        MethodSymbol _enumerateConstantsSymbol;
+
+        /// <summary>
+        /// Optional static ctor if needed.
+        /// </summary>
+        SynthesizedCctorSymbol _lazyCctorSymbol;
+
+        /// <summary>
+        /// Additional type members.
+        /// </summary>
+        private List<Symbol> _lazyMembers = new List<Symbol>();
 
         public SynthesizedScriptTypeSymbol(PhpCompilation compilation)
         {
@@ -98,11 +116,18 @@ namespace Pchp.CodeAnalysis.Symbols
             {
                 this.EnumerateReferencedFunctionsSymbol,
                 this.EnumerateScriptsSymbol,
+                this.EnumerateConstantsSymbol,
             };
 
             //
             if (EntryPointSymbol != null)
                 list.Add(EntryPointSymbol);
+
+            if (_lazyCctorSymbol != null)
+                list.Add(_lazyCctorSymbol);
+
+            //
+            list.AddRange(_lazyMembers);
 
             //
             return list.AsImmutable();
@@ -110,15 +135,26 @@ namespace Pchp.CodeAnalysis.Symbols
 
         public override ImmutableArray<Symbol> GetMembers(string name) => GetMembers().Where(m => m.Name == name).AsImmutable();
 
-        public override ImmutableArray<NamedTypeSymbol> GetTypeMembers() => ImmutableArray<NamedTypeSymbol>.Empty;
+        public override ImmutableArray<NamedTypeSymbol> GetTypeMembers() => _lazyMembers.OfType<NamedTypeSymbol>().AsImmutable();
 
-        public override ImmutableArray<NamedTypeSymbol> GetTypeMembers(string name) => ImmutableArray<NamedTypeSymbol>.Empty;
+        public override ImmutableArray<NamedTypeSymbol> GetTypeMembers(string name) => _lazyMembers.OfType<NamedTypeSymbol>().Where(t => t.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).AsImmutable();
 
         internal override ImmutableArray<NamedTypeSymbol> GetDeclaredInterfaces(ConsList<Symbol> basesBeingResolved) => ImmutableArray<NamedTypeSymbol>.Empty;
 
-        internal override IEnumerable<IFieldSymbol> GetFieldsToEmit() => ImmutableArray<IFieldSymbol>.Empty;
+        internal override IEnumerable<IFieldSymbol> GetFieldsToEmit() => _lazyMembers.OfType<FieldSymbol>().AsImmutable();
 
         internal override ImmutableArray<NamedTypeSymbol> GetInterfacesToEmit() => ImmutableArray<NamedTypeSymbol>.Empty;
+
+        public override ImmutableArray<MethodSymbol> StaticConstructors
+        {
+            get
+            {
+                if (_lazyCctorSymbol != null)
+                    return ImmutableArray.Create<MethodSymbol>(_lazyCctorSymbol);
+
+                return ImmutableArray<MethodSymbol>.Empty;
+            }
+        }
 
         /// <summary>
         /// Method that enumerates all referenced global functions.
@@ -130,7 +166,7 @@ namespace Pchp.CodeAnalysis.Symbols
             var action_T2 = compilation.GetWellKnownType(WellKnownType.System_Action_T2);
             var action_string_method = action_T2.Construct(compilation.CoreTypes.String, compilation.CoreTypes.RuntimeMethodHandle);
 
-            var method = new SynthesizedMethodSymbol(this, "EnumerateReferencedFunctions", true, compilation.CoreTypes.Void, Accessibility.Public);
+            var method = new SynthesizedMethodSymbol(this, "EnumerateReferencedFunctions", true, false, compilation.CoreTypes.Void, Accessibility.Public);
             method.SetParameters(new SynthesizedParameterSymbol(method, action_string_method, 0, RefKind.None, "callback"));
 
             //
@@ -147,11 +183,59 @@ namespace Pchp.CodeAnalysis.Symbols
             var action_T2 = compilation.GetWellKnownType(WellKnownType.System_Action_T2);
             var action_string_method = action_T2.Construct(compilation.CoreTypes.String, compilation.CoreTypes.RuntimeMethodHandle);
 
-            var method = new SynthesizedMethodSymbol(this, "EnumerateScripts", true, compilation.CoreTypes.Void, Accessibility.Public);
+            var method = new SynthesizedMethodSymbol(this, "EnumerateScripts", true, false, compilation.CoreTypes.Void, Accessibility.Public);
             method.SetParameters(new SynthesizedParameterSymbol(method, action_string_method, 0, RefKind.None, "callback"));
 
             //
             return method;
         }
+
+        /// <summary>
+        /// Method that enumerates all app-wide global constants.
+        /// EnumerateConstants(Action&lt;string, PhpValue, bool&gt; callback)
+        /// </summary>
+        MethodSymbol CreateEnumerateConstantsSymbol()
+        {
+            var compilation = DeclaringCompilation;
+            var action_T3 = compilation.GetWellKnownType(WellKnownType.System_Action_T3);
+            var action_string_value_bool = action_T3.Construct(compilation.CoreTypes.String, compilation.CoreTypes.PhpValue, compilation.CoreTypes.Boolean);
+
+            var method = new SynthesizedMethodSymbol(this, "EnumerateConstants", true, false, compilation.CoreTypes.Void, Accessibility.Public);
+            method.SetParameters(new SynthesizedParameterSymbol(method, action_string_value_bool, 0, RefKind.None, "callback"));
+
+            //
+            return method;
+        }
+
+        #region IWithSynthesized
+
+        MethodSymbol IWithSynthesized.GetOrCreateStaticCtorSymbol()
+        {
+            if (_lazyCctorSymbol == null)
+                _lazyCctorSymbol = new SynthesizedCctorSymbol(this);
+
+            return _lazyCctorSymbol;
+        }
+
+        SynthesizedFieldSymbol IWithSynthesized.GetOrCreateSynthesizedField(TypeSymbol type, string name, Accessibility accessibility, bool isstatic)
+        {
+            var field = _lazyMembers.OfType<SynthesizedFieldSymbol>().FirstOrDefault(f => f.Name == name && f.IsStatic == isstatic && f.Type == type);
+            if (field == null)
+            {
+                field = new SynthesizedFieldSymbol(this, type, name, accessibility, isstatic);
+                _lazyMembers.Add(field);
+            }
+
+            return field;
+        }
+
+        void IWithSynthesized.AddTypeMember(NamedTypeSymbol nestedType)
+        {
+            Contract.ThrowIfNull(nestedType);
+
+            _lazyMembers.Add(nestedType);
+        }
+
+        #endregion
     }
 }

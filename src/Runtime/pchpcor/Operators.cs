@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -58,24 +59,26 @@ namespace Pchp.Core
         /// <summary>
         /// Ensures given variable is not <c>null</c>.
         /// </summary>
-        public static object EnsureObject(ref object obj)
-        {
-            if (obj == null)
-                obj = new stdClass();
-            
-            return obj;
-        }
+        public static object EnsureObject(ref object obj) => obj ?? (obj = new stdClass());
 
         /// <summary>
         /// Ensures given variable is not <c>null</c>.
         /// </summary>
-        public static PhpArray EnsureArray(ref PhpArray arr)
-        {
-            if (arr == null)
-                arr = new PhpArray();
+        public static PhpArray EnsureArray(ref PhpArray arr) => arr ?? (arr = new PhpArray());
 
-            return arr;
-        }
+        /// <summary>
+        /// Implementation of PHP <c>isset</c> operator.
+        /// </summary>
+        public static bool IsSet(PhpValue value) => value.IsSet && !value.IsNull;
+
+        #endregion
+
+        #region Enumerator
+
+        /// <summary>
+        /// Gets enumerator object for given value.
+        /// </summary>
+        public static IPhpEnumerator GetForeachEnumerator(PhpValue value, bool aliasedValues, RuntimeTypeHandle caller) => value.GetForeachEnumerator(aliasedValues, caller);
 
         #endregion
     }

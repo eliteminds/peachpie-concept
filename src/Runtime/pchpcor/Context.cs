@@ -14,7 +14,7 @@ namespace Pchp.Core
 {
     using TFunctionsMap = Context.HandleMap<RuntimeMethodHandle, Providers.RuntimeMethodHandleComparer, Providers.OrdinalIgnoreCaseStringComparer>;
     using TTypesMap = Context.HandleMap<Type, Providers.TypeComparer, Providers.OrdinalIgnoreCaseStringComparer>;
-
+    
     /// <summary>
     /// Runtime context for a PHP application.
     /// </summary>
@@ -65,7 +65,10 @@ namespace Pchp.Core
         /// </summary>
         readonly TTypesMap _types;
 
-        // TODO: global constants
+        /// <summary>
+        /// Map of global constants.
+        /// </summary>
+        readonly ConstsMap _constants = new ConstsMap();
 
         readonly ScriptsMap _scripts = new ScriptsMap();
 
@@ -90,6 +93,9 @@ namespace Pchp.Core
 
             tscriptinfo.GetDeclaredMethod("EnumerateScripts")
                 .Invoke(null, new object[] { new Action<string, RuntimeMethodHandle>(ScriptsMap.DeclareScript) });
+
+            tscriptinfo.GetDeclaredMethod("EnumerateConstants")
+                .Invoke(null, new object[] { new Action<string, PhpValue, bool>(ConstsMap.DefineAppConstant) });
         }
 
         /// <summary>
@@ -184,19 +190,17 @@ namespace Pchp.Core
         /// <summary>
         /// Resolves path according to PHP semantics, lookups the file in runtime tables and calls its Main method.
         /// </summary>
-        /// <param name="dir">Current script directory. Used for relative path resolution. Can be <c>null</c> to not resolve against current directory.</param>
+        /// <param name="cd">Current script directory. Used for relative path resolution. Can be <c>null</c> to not resolve against current directory.</param>
         /// <param name="path">The relative or absolute path to resolve and include.</param>
         /// <param name="locals">Variables scope for the included script.</param>
         /// <param name="this">Reference to <c>this</c> variable.</param>
         /// <param name="once">Whether to include according to include once semantics.</param>
         /// <param name="throwOnError">Whether to include according to require semantics.</param>
         /// <returns>Inclusion result value.</returns>
-        public PhpValue Include(string dir, string path, PhpArray locals, object @this = null, bool once = false, bool throwOnError = false)
+        public PhpValue Include(string cd, string path, PhpArray locals, object @this = null, bool once = false, bool throwOnError = false)
         {
-            // TODO: resolve path
-
-            var script = _scripts.GetScript(path);
-            if (script.MainMethod != null)
+            var script = ScriptsMap.SearchForIncludedFile(path, null, cd, _scripts.GetScript);  // TODO: _scripts.GetScript => make relative path from absolute
+            if (script.IsValid)
             {
                 if (once && _scripts.IsIncluded(script.Index))
                 {
@@ -219,6 +223,25 @@ namespace Pchp.Core
                 }
             }
         }
+
+        #endregion
+
+        #region Path Resolving
+
+        /// <summary>
+        /// Root directory (web root or console app root) where loaded scripts are relative to.
+        /// </summary>
+        /// <remarks>
+        /// - <c>__FILE__</c> and <c>__DIR__</c> magic constants are resolved as concatenation with this value.
+        /// </remarks>
+        public virtual string RootPath { get; } = "";
+
+        /// <summary>
+        /// Gets full script path in current context.
+        /// </summary>
+        /// <typeparam name="TScript">Script type.</typeparam>
+        /// <returns>Full script path.</returns>
+        public string ScriptPath<TScript>() => RootPath + ScriptsMap.GetScript<TScript>().Path;
 
         #endregion
 
@@ -277,7 +300,11 @@ namespace Pchp.Core
             if (obj == null)
             {
                 obj = new T();
-                //if (obj is IStaticInit) ((IStaticInit)obj).Init(this);
+
+                if (obj is IStaticInit)
+                {
+                    ((IStaticInit)obj).Init(this);
+                }
             }
 
             Debug.Assert(obj is T);
@@ -340,6 +367,44 @@ namespace Pchp.Core
 
         #endregion
 
+        #region Constants
+
+        /// <summary>
+        /// Gets a constant value.
+        /// </summary>
+        public PhpValue GetConstant(string name)
+        {
+            int idx = 0;
+            return GetConstant(name, ref idx);
+        }
+
+        /// <summary>
+        /// Gets a constant value.
+        /// </summary>
+        public PhpValue GetConstant(string name, ref int idx)
+        {
+            return _constants.GetConstant(name, ref idx);
+
+            // TODO: check the constant is valid (PhpValue.IsSet) otherwise Warning: undefined constant
+        }
+
+        /// <summary>
+        /// Defines a runtime constant.
+        /// </summary>
+        public bool DefineConstant(string name, PhpValue value, bool ignorecase = false) => _constants.DefineConstant(name, value, ignorecase);
+
+        /// <summary>
+        /// Determines whether a constant with given name is defined.
+        /// </summary>
+        public bool IsConstantDefined(string name) => _constants.IsDefined(name);
+
+        /// <summary>
+        /// Gets enumeration of all available constants and their values.
+        /// </summary>
+        public IEnumerable<KeyValuePair<string, PhpValue>> GetConstants() => _constants;
+
+        #endregion
+
         #region Error Reporting
 
         /// <summary>
@@ -370,6 +435,45 @@ namespace Pchp.Core
             if (_errorReportingDisabled > 0)
                 _errorReportingDisabled--;
         }
+
+        /// <summary>
+        /// Terminates execution of the current script by throwing an exception.
+        /// </summary>
+        /// <param name="status">Exit status.</param>
+        public virtual void Exit(PhpValue status)
+        {
+            if (IsExitStatusPrintable(ref status))
+            {
+                Echo(status);
+            }
+            else
+            {
+                //this.ExitCode = status.ToLong();
+                // TODO: in Main() return ctx.ExitCode;
+            }
+
+            throw new ScriptDiedException(status);
+        }
+
+        static bool IsExitStatusPrintable(ref PhpValue status)
+        {
+            switch (status.TypeCode)
+            {
+                case PhpTypeCode.Int32:
+                case PhpTypeCode.Long:
+                    return false;
+
+                case PhpTypeCode.Alias:
+                    return IsExitStatusPrintable(ref status.Alias.Value);
+
+                default:
+                    return true;
+            }
+        }
+
+        public void Exit(long status) => Exit(PhpValue.Create(status));
+
+        public void Exit() => Exit(255);
 
         #endregion
 

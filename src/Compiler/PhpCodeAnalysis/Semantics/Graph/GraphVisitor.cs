@@ -74,6 +74,7 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
 
         public virtual void VisitCFGCatchBlock(CatchBlock x)
         {
+            Accept(x.Variable);
             VisitCFGBlockInternal(x);
         }
 
@@ -120,6 +121,9 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
 
         public virtual void VisitCFGForeachMoveNextEdge(ForeachMoveNextEdge x)
         {
+            Accept(x.ValueVariable);
+            Accept(x.KeyVariable);
+
             x.BodyBlock.Accept(this);
             x.NextBlock.Accept(this);
         }

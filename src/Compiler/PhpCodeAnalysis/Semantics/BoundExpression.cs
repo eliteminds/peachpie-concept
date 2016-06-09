@@ -12,6 +12,7 @@ using Pchp.Syntax.AST;
 using Pchp.CodeAnalysis.Symbols;
 using Pchp.Syntax;
 using Pchp.CodeAnalysis.CodeGen;
+using Microsoft.CodeAnalysis.CodeGen;
 
 namespace Pchp.CodeAnalysis.Semantics
 {
@@ -67,6 +68,11 @@ namespace Pchp.CodeAnalysis.Semantics
         /// </summary>
         ReadQuiet = 64,
 
+        /// <summary>
+        /// The variable will be unset. Combined with <c>quiet</c> flag, valid for variables, array entries and fields.
+        /// </summary>
+        Unset = 128,
+
         // NOTE: WriteAndReadRef has to be constructed by semantic binder as bound expression with Write and another bound expression with ReadRef
         // NOTE: ReadAndWriteAndReadRef has to be constructed by semantic binder as bound expression with Read|Write and another bound expression with ReadRef
     }
@@ -112,6 +118,11 @@ namespace Pchp.CodeAnalysis.Semantics
         public bool IsWrite => (_flags & AccessMask.Write) != 0;
 
         /// <summary>
+        /// In case a variable will be unset.
+        /// </summary>
+        public bool IsUnset => (_flags & AccessMask.Unset) != 0;
+
+        /// <summary>
         /// Gets type of value to be written.
         /// </summary>
         public TypeRefMask WriteMask => _writeTypeMask;
@@ -144,7 +155,7 @@ namespace Pchp.CodeAnalysis.Semantics
         /// <summary>
         /// The read is for check purposes only and won't result in a warning in case the variable does not exist.
         /// </summary>
-        public bool IsCheck => (_flags & AccessMask.ReadQuiet) != 0;
+        public bool IsQuiet => (_flags & AccessMask.ReadQuiet) != 0;
 
         /// <summary>
         /// In case we might change the variable content to array, object or an alias (we may need write access).
@@ -181,7 +192,8 @@ namespace Pchp.CodeAnalysis.Semantics
                 if (EnsureObject) result |= Core.Dynamic.AccessFlags.EnsureObject;
                 if (EnsureArray) result |= Core.Dynamic.AccessFlags.EnsureArray;
                 if (IsReadRef) result |= Core.Dynamic.AccessFlags.EnsureAlias;
-                if (IsCheck) result |= Core.Dynamic.AccessFlags.CheckOnly;
+                if (IsQuiet) result |= Core.Dynamic.AccessFlags.CheckOnly;
+                if (IsUnset) result |= Core.Dynamic.AccessFlags.Unset;
 
                 return result;
             }
@@ -226,7 +238,7 @@ namespace Pchp.CodeAnalysis.Semantics
             return new BoundAccess(_flags | AccessMask.Read, target, _writeTypeMask);
         }
 
-        public BoundAccess WithCheck()
+        public BoundAccess WithQuiet()
         {
             return new BoundAccess(_flags | AccessMask.ReadQuiet, _targetType, _writeTypeMask);
         }
@@ -255,6 +267,11 @@ namespace Pchp.CodeAnalysis.Semantics
         /// Simple write access without bound write type mask.
         /// </summary>
         public static BoundAccess Write => new BoundAccess(AccessMask.Write, null, 0);
+
+        /// <summary>
+        /// Unset variable.
+        /// </summary>
+        public static BoundAccess Unset => new BoundAccess(AccessMask.Unset | AccessMask.ReadQuiet, null, 0);
 
         /// <summary>
         /// Expression won't be read or written to.
@@ -564,6 +581,20 @@ namespace Pchp.CodeAnalysis.Semantics
         }
     }
 
+    /// <summary>
+    /// <c>exit</c> construct.
+    /// </summary>
+    public sealed partial class BoundExitEx : BoundRoutineCall
+    {
+        public override BoundExpression Instance => null;
+
+        public BoundExitEx(BoundExpression value = null)
+            : base(value != null ? ImmutableArray.Create(new BoundArgument(value)) : ImmutableArray<BoundArgument>.Empty)
+        {
+            Debug.Assert(value.Access.IsRead);
+        }
+    }
+
     #endregion
 
     #region BoundLiteral
@@ -572,7 +603,7 @@ namespace Pchp.CodeAnalysis.Semantics
     {
         Optional<object> _value;
 
-        public string Spelling => this.ConstantValue.Value.ToString();
+        public string Spelling => this.ConstantValue.Value != null ? this.ConstantValue.Value.ToString() : "NULL";
 
         public override Optional<object> ConstantValue => _value;
 
@@ -831,6 +862,29 @@ namespace Pchp.CodeAnalysis.Semantics
 
     #endregion
 
+    #region BoundListEx
+
+    /// <summary>
+    /// PHP <c>list</c> expression that can be written to.
+    /// </summary>
+    public partial class BoundListEx : BoundReferenceExpression
+    {
+        public override OperationKind Kind => OperationKind.None;
+
+        public BoundListEx()
+        {
+            throw new NotImplementedException();
+        }
+
+        public override void Accept(OperationVisitor visitor)
+            => visitor.DefaultVisit(this);
+
+        public override TResult Accept<TArgument, TResult>(OperationVisitor<TArgument, TResult> visitor, TArgument argument)
+            => visitor.DefaultVisit(this, argument);
+    }
+
+    #endregion
+
     #region BoundFieldRef
 
     public partial class BoundFieldRef : BoundReferenceExpression, IFieldReferenceExpression
@@ -1014,6 +1068,108 @@ namespace Pchp.CodeAnalysis.Semantics
 
         public override TResult Accept<TArgument, TResult>(OperationVisitor<TArgument, TResult> visitor, TArgument argument)
             => visitor.VisitIsExpression(this, argument);
+    }
+
+    #endregion
+
+    #region BoundGlobalConst
+
+    public partial class BoundGlobalConst : BoundExpression
+    {
+        public override OperationKind Kind => OperationKind.None;
+
+        /// <summary>
+        /// Constant name.
+        /// </summary>
+        public string Name { get; private set; }
+
+        public override Optional<object> ConstantValue => _boundValue;
+
+        Optional<object> _boundValue = default(Optional<object>);
+
+        internal void SetConstantValue(object value)
+        {
+            _boundValue = new Optional<object>(value);
+        }
+
+        public BoundGlobalConst(string name)
+        {
+            this.Name = name;
+        }
+
+        public override void Accept(OperationVisitor visitor)
+            => visitor.DefaultVisit(this);
+
+        public override TResult Accept<TArgument, TResult>(OperationVisitor<TArgument, TResult> visitor, TArgument argument)
+            => visitor.DefaultVisit(this, argument);
+    }
+
+    #endregion
+
+    #region BoundPseudoConst
+
+    public partial class BoundPseudoConst : BoundExpression
+    {
+        public override OperationKind Kind => OperationKind.None;
+
+        public readonly PseudoConstUse.Types Type;
+
+        public BoundPseudoConst(PseudoConstUse.Types type)
+        {
+            this.Type = type;
+        }
+
+        public override void Accept(OperationVisitor visitor)
+            => visitor.DefaultVisit(this);
+
+        public override TResult Accept<TArgument, TResult>(OperationVisitor<TArgument, TResult> visitor, TArgument argument)
+            => visitor.DefaultVisit(this, argument);
+    }
+
+    #endregion
+
+    #region BoundIsSetEx, BoundUnsetEx
+
+    public partial class BoundIsSetEx : BoundExpression
+    {
+        public override OperationKind Kind => OperationKind.None;
+
+        /// <summary>
+        /// Reference to be checked if it is set.
+        /// </summary>
+        public ImmutableArray<BoundReferenceExpression> VarReferences { get; set; }
+
+        public BoundIsSetEx(ImmutableArray<BoundReferenceExpression> vars)
+        {
+            this.VarReferences = vars;
+        }
+
+        public override void Accept(OperationVisitor visitor)
+            => visitor.DefaultVisit(this);
+
+        public override TResult Accept<TArgument, TResult>(OperationVisitor<TArgument, TResult> visitor, TArgument argument)
+            => visitor.DefaultVisit(this, argument);
+    }
+
+    public partial class BoundUnset : BoundStatement
+    {
+        public override OperationKind Kind => OperationKind.None;
+
+        /// <summary>
+        /// Reference to be unset.
+        /// </summary>
+        public ImmutableArray<BoundReferenceExpression> VarReferences { get; set; }
+
+        public BoundUnset(ImmutableArray<BoundReferenceExpression> vars)
+        {
+            this.VarReferences = vars;
+        }
+
+        public override void Accept(OperationVisitor visitor)
+            => visitor.DefaultVisit(this);
+
+        public override TResult Accept<TArgument, TResult>(OperationVisitor<TArgument, TResult> visitor, TArgument argument)
+            => visitor.DefaultVisit(this, argument);
     }
 
     #endregion

@@ -104,13 +104,11 @@ namespace Pchp.CodeAnalysis.CodeGen
         int _fieldIndex;
 
         public SynthesizedFieldSymbol CreateCallSiteField(string namehint)
-            => ((IWithSynthesized)_container).CreateSynthesizedField(CallSite, "<>" + namehint + "`" + (_fieldIndex++), Accessibility.Private, true);
+            => ((IWithSynthesized)_container).GetOrCreateSynthesizedField(CallSite, "<>" + namehint + "`" + (_fieldIndex++), Accessibility.Private, true);
 
-        public DynamicOperationFactory(CodeGenerator cg)
+        public DynamicOperationFactory(CodeGenerator cg, NamedTypeSymbol container)
         {
             Contract.ThrowIfNull(cg);
-
-            var container = cg.Routine.ContainingType;
 
             Debug.Assert(container is IWithSynthesized);
 
@@ -221,6 +219,15 @@ namespace Pchp.CodeAnalysis.CodeGen
             }
 
             return result;
+        }
+
+        internal SynthesizedStaticLocHolder DeclareStaticLocalHolder(string locName, TypeSymbol locType)
+        {
+            var holder = new SynthesizedStaticLocHolder(_cg.Routine, locName, locType);
+
+            ((IWithSynthesized)_container).AddTypeMember(holder);
+
+            return holder;
         }
     }
 }

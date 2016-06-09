@@ -18,6 +18,12 @@ namespace Pchp.CodeAnalysis.Symbols
         /// <summary>
         /// Creates synthesized field.
         /// </summary>
-        SynthesizedFieldSymbol CreateSynthesizedField(TypeSymbol type, string name, Accessibility accessibility, bool isstatic);
+        SynthesizedFieldSymbol GetOrCreateSynthesizedField(TypeSymbol type, string name, Accessibility accessibility, bool isstatic);
+
+        /// <summary>
+        /// Adds a type member to the class.
+        /// </summary>
+        /// <param name="nestedType">Type to be added as nested type.</param>
+        void AddTypeMember(NamedTypeSymbol nestedType);
     }
 }

@@ -12,6 +12,8 @@ using Pchp.CodeAnalysis.Symbols;
 using Pchp.CodeAnalysis.Semantics.Graph;
 using System.Reflection.Metadata;
 using System.Diagnostics;
+using System.Collections.Immutable;
+using Cci = Microsoft.Cci;
 
 namespace Pchp.CodeAnalysis.CodeGen
 {
@@ -189,6 +191,7 @@ namespace Pchp.CodeAnalysis.CodeGen
         /// <summary>
         /// Place for loading a reference to <c>this</c>.
         /// </summary>
+        public IPlace ThisPlaceOpt => _thisPlace;
         readonly IPlace _thisPlace;
 
         /// <summary>
@@ -227,7 +230,7 @@ namespace Pchp.CodeAnalysis.CodeGen
         /// <summary>
         /// Gets a reference to compilation object.
         /// </summary>
-        public PhpCompilation DeclaringCompilation => _routine.DeclaringCompilation;
+        public PhpCompilation DeclaringCompilation => _moduleBuilder.Compilation;
 
         /// <summary>
         /// Well known types.
@@ -249,31 +252,48 @@ namespace Pchp.CodeAnalysis.CodeGen
         /// </summary>
         public bool IsGlobalScope => _routine is SourceGlobalMethodSymbol;
 
+        /// <summary>
+        /// Type of the caller context (the class declaring current method) or null.
+        /// </summary>
+        public TypeSymbol CallerType => (_routine is SourceMethodSymbol) ? _routine.ContainingType : null;
+
         #endregion
 
         #region Construction
 
-        public CodeGenerator(SourceRoutineSymbol routine, ILBuilder il, PEModuleBuilder moduleBuilder, DiagnosticBag diagnostics, OptimizationLevel optimizations, bool emittingPdb)
+        public CodeGenerator(ILBuilder il, PEModuleBuilder moduleBuilder, DiagnosticBag diagnostics, OptimizationLevel optimizations, bool emittingPdb,
+            NamedTypeSymbol container, IPlace contextPlace, IPlace thisPlace)
         {
-            Contract.ThrowIfNull(routine);
             Contract.ThrowIfNull(il);
             Contract.ThrowIfNull(moduleBuilder);
+            
+            _il = il;
+            _moduleBuilder = moduleBuilder;
+            _optimizations = optimizations;
+            _diagnostics = diagnostics;
+
+            _emmittedTag = 0;
+
+            _contextPlace = contextPlace;
+            _thisPlace = thisPlace;
+
+            _factory = new DynamicOperationFactory(this, container);
+
+            _emitPdbSequencePoints = emittingPdb;
+        }
+
+        public CodeGenerator(SourceRoutineSymbol routine, ILBuilder il, PEModuleBuilder moduleBuilder, DiagnosticBag diagnostics, OptimizationLevel optimizations, bool emittingPdb)
+            :this(il, moduleBuilder, diagnostics, optimizations, emittingPdb, routine.ContainingType, routine.GetContextPlace(), routine.GetThisPlace())
+        {
+            Contract.ThrowIfNull(routine);
 
             if (routine.ControlFlowGraph == null)
                 throw new ArgumentException();
 
             _routine = routine;
-            _il = il;
-            _moduleBuilder = moduleBuilder;
-            _optimizations = optimizations;
-            _diagnostics = diagnostics;
+            
             _emmittedTag = routine.ControlFlowGraph.NewColor();
-
-            _contextPlace = routine.GetContextPlace();
-            _thisPlace = routine.GetThisPlace();
             _localsPlaceOpt = GetLocalsPlace(routine);
-
-            _factory = new DynamicOperationFactory(this);
 
             // Emit sequence points unless
             // - the PDBs are not being generated
@@ -284,13 +304,20 @@ namespace Pchp.CodeAnalysis.CodeGen
             _emitPdbSequencePoints = emittingPdb && true; // routine.GenerateDebugInfo;
         }
 
-        static IPlace GetLocalsPlace(SourceRoutineSymbol routine)
+        IPlace GetLocalsPlace(SourceRoutineSymbol routine)
         {
             if (routine is SourceGlobalMethodSymbol)
             {
                 // second parameter
                 Debug.Assert(routine.ParameterCount >= 2 && routine.Parameters[1].Name == SpecialParameterSymbol.LocalsName);
                 return new ParamPlace(routine.Parameters[1]);
+            }
+            else if ((routine.Flags & SourceRoutineSymbol.RoutineFlags.RequiresLocalsArray) != 0)
+            {
+                // declare PhpArray <locals>
+                var symbol = new SynthesizedLocalSymbol(Routine, "<locals>", CoreTypes.PhpArray);
+                var localsDef = this.Builder.LocalSlotManager.DeclareLocal((Cci.ITypeReference)symbol.Type, symbol, symbol.Name, SynthesizedLocalKind.OptimizerTemp, LocalDebugId.None, 0, LocalSlotConstraints.None, false, ImmutableArray<TypedConstant>.Empty, false);
+                return new LocalPlace(localsDef);
             }
 
             //

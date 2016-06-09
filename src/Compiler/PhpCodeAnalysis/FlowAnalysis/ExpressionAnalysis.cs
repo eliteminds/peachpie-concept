@@ -43,6 +43,11 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
         }
 
         /// <summary>
+        /// Reference to corresponding source routine.
+        /// </summary>
+        protected SourceRoutineSymbol Routine => State.Common.Routine;
+
+        /// <summary>
         /// The worklist to be used to enqueue next blocks.
         /// </summary>
         protected Worklist<BoundBlock> Worklist => _analysis.Worklist;
@@ -173,6 +178,11 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
         {
             x.Access = access;
             Visit(x);
+        }
+
+        internal TypeSymbol ResolveType(DirectTypeRef dtype)
+        {
+            return (TypeSymbol)_model.GetType(dtype.ClassName);
         }
 
         #endregion
@@ -350,6 +360,43 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
             base.VisitInvalidStatement(operation);
         }
 
+        public sealed override void VisitVariableDeclarationStatement(IVariableDeclarationStatement operation)
+        {
+            if (operation is BoundStaticVariableStatement)
+            {
+                VisitStaticVariableStatement((BoundStaticVariableStatement)operation);
+            }
+            else
+            {
+                throw ExceptionUtilities.UnexpectedValue(operation);
+            }
+        }
+
+        protected virtual void VisitStaticVariableStatement(BoundStaticVariableStatement x)
+        {
+            foreach (var v in x.Variables)
+            {
+                var name = v.Variable.Name;
+
+                var oldtype = State.GetVarType(name);
+
+                // set var
+                if (v.InitialValue != null)
+                {
+                    // analyse initializer
+                    Visit(v.InitialValue);
+
+                    State.SetVarInitialized(name);
+                    State.LTInt64Max(name, (v.InitialValue.ConstantValue.HasValue && v.InitialValue.ConstantValue.Value is long && (long)v.InitialValue.ConstantValue.Value < long.MaxValue));
+                    State.SetVar(name, ((BoundExpression)v.InitialValue).TypeRefMask | oldtype);
+                }
+                else
+                {
+                    State.LTInt64Max(name, false);
+                }
+            }
+        }
+
         #endregion
 
         #region Visit Literals
@@ -443,6 +490,9 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
                 State.SetVarUsed(x.Name);
                 var vartype = State.GetVarType(x.Name);
 
+                if (vartype.IsVoid)
+                    vartype = TypeRefMask.AnyType;
+
                 if (x.Access.IsEnsure)
                 {
                     if (x.Access.IsReadRef)
@@ -479,6 +529,28 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
                     State.SetVarRef(x.Name);
                     x.TypeRefMask = x.TypeRefMask.WithRefFlag;
                 }
+
+                //
+                if (x.Variable is BoundStaticLocal)
+                {
+                    // analysis has to be started over // TODO: start from the block which declares the static local variable
+                    var startBlock = Routine.ControlFlowGraph.Start;
+                    var startState = startBlock.FlowState;
+
+                    var oldVar = startState.GetVarType(x.Name);
+                    if (oldVar != x.TypeRefMask)
+                    {
+                        startState.SetVar(x.Name, x.TypeRefMask);
+                        this.Worklist.Enqueue(startBlock);
+                    }
+                }
+            }
+
+            if (x.Access.IsUnset)
+            {
+                State.SetVar(x.Name, 0);
+                State.LTInt64Max(x.Name, false);
+                x.TypeRefMask = 0;
             }
         }
 
@@ -880,6 +952,8 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
 
         public override void VisitInvocationExpression(IInvocationExpression operation)
         {
+            var x = (BoundRoutineCall)operation;
+
             // TODO: write arguments Access
             // TODO: visit invocation member of
             // TODO: 2 pass, analyze arguments -> resolve method -> assign argument to parameter -> write arguments access -> analyze arguments again
@@ -916,10 +990,24 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
             {
                 VisitIncludeEx((BoundIncludeEx)operation);
             }
+            else if (operation is BoundExitEx)
+            {
+                VisitExit((BoundExitEx)operation);
+            }
             else
             {
                 throw new NotImplementedException();
             }
+
+            if (x.Access.IsReadRef)
+            {
+                x.TypeRefMask = x.TypeRefMask.WithRefFlag;
+            }
+        }
+
+        protected virtual void VisitExit(BoundExitEx x)
+        {
+            //
         }
 
         protected virtual void VisitEcho(BoundEcho x)
@@ -971,6 +1059,11 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
                 }
 
                 result_type |= c.GetResultType(TypeCtx);
+            }
+
+            if (overloads.Candidates.Length == 0)
+            {
+                result_type = TypeRefMask.AnyType;
             }
 
             x.Overloads = overloads;
@@ -1134,6 +1227,8 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
 
         protected virtual void VisitIncludeEx(BoundIncludeEx x)
         {
+            this.Routine.Flags |= SourceRoutineSymbol.RoutineFlags.HasInclude;
+
             // resolve target script
             Debug.Assert(x.ArgumentsInSourceOrder.Length == 1);
             var targetExpr = x.ArgumentsInSourceOrder[0].Value;
@@ -1283,7 +1378,74 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
 
         public override void DefaultVisit(IOperation operation)
         {
-            throw new NotImplementedException();
+            if (operation is BoundPseudoConst)
+            {
+                VisitPseudoConst((BoundPseudoConst)operation);
+            }
+            else if (operation is BoundGlobalConst)
+            {
+                VisitGlobalConst((BoundGlobalConst)operation);
+            }
+            else if (operation is BoundIsSetEx)
+            {
+                VisitsSet((BoundIsSetEx)operation);
+            }
+            else if (operation is BoundUnset)
+            {
+                VisitUnset((BoundUnset)operation);
+            }
+            else if (operation is BoundEmptyStatement)
+            {
+                // nop
+            }
+            else
+            {
+                throw new NotImplementedException(operation.GetType().Name);
+            }
+        }
+
+        public virtual void VisitsSet(BoundIsSetEx x)
+        {
+            x.VarReferences.ForEach(Visit);
+            x.TypeRefMask = TypeCtx.GetBooleanTypeMask();
+        }
+
+        public virtual void VisitUnset(BoundUnset x)
+        {
+            x.VarReferences.ForEach(Visit);
+        }
+
+        public void VisitPseudoConst(BoundPseudoConst x)
+        {
+            switch (x.Type)
+            {
+                case PseudoConstUse.Types.Line:
+                    x.TypeRefMask = TypeCtx.GetLongTypeMask();
+                    break;
+
+                case PseudoConstUse.Types.Class:
+                case PseudoConstUse.Types.Trait:
+                case PseudoConstUse.Types.Method:
+                case PseudoConstUse.Types.Function:
+                case PseudoConstUse.Types.Namespace:
+                case PseudoConstUse.Types.Dir:
+                case PseudoConstUse.Types.File:
+                    x.TypeRefMask = TypeCtx.GetStringTypeMask();
+                    break;
+
+                default:
+                    throw new NotImplementedException(x.Type.ToString());
+            }
+        }
+
+        public void VisitGlobalConst(BoundGlobalConst x)
+        {
+            // TODO: check constant name
+
+            // TODO: bind to app-wide constant if possible
+            //x.SetConstantValue(...)
+
+            x.TypeRefMask = TypeRefMask.AnyType;    // only scalars ?
         }
 
         public override void VisitConditionalChoiceExpression(IConditionalChoiceExpression operation)
@@ -1319,8 +1481,11 @@ namespace Pchp.CodeAnalysis.FlowAnalysis
 
         protected virtual void VisitReturnStatement(BoundReturnStatement x)
         {
-            Visit(x.Returned);
-            State.FlowThroughReturn(x.Returned.TypeRefMask);
+            if (x.Returned != null)
+            {
+                Visit(x.Returned);
+                State.FlowThroughReturn(x.Returned.TypeRefMask);
+            }
         }
 
         #endregion

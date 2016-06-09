@@ -226,6 +226,12 @@ namespace Pchp.CodeAnalysis.CodeGen
                             .Expect(compilation.CoreTypes.PhpValue);
                         break;
                     }
+                    else if (from == compilation.CoreTypes.PhpString)
+                    {
+                        il.EmitCall(module, diagnostic, ILOpCode.Call, compilation.CoreMethods.PhpValue.Create_PhpString)
+                            .Expect(compilation.CoreTypes.PhpValue);
+                        break;
+                    }
                     else if (from == compilation.CoreTypes.PhpNumber)
                     {
                         il.EmitCall(module, diagnostic, ILOpCode.Call, compilation.CoreMethods.PhpValue.Create_PhpNumber)
@@ -235,6 +241,12 @@ namespace Pchp.CodeAnalysis.CodeGen
                     else if (from == compilation.CoreTypes.PhpArray)
                     {
                         il.EmitCall(module, diagnostic, ILOpCode.Call, compilation.CoreMethods.PhpValue.Create_PhpArray)
+                            .Expect(compilation.CoreTypes.PhpValue);
+                        break;
+                    }
+                    else if (from == compilation.CoreTypes.IntStringKey)
+                    {
+                        il.EmitCall(module, diagnostic, ILOpCode.Call, compilation.CoreMethods.PhpValue.Create_IntStringKey)
                             .Expect(compilation.CoreTypes.PhpValue);
                         break;
                     }
@@ -451,7 +463,14 @@ namespace Pchp.CodeAnalysis.CodeGen
             if (from == CoreTypes.PhpArray)
                 return;
 
-            throw new NotImplementedException($"(array){from.Name}");
+            if (from == CoreTypes.PhpValue)
+            {
+                EmitCall(ILOpCode.Call, CoreMethods.Operators.AsArray_PhpValue);
+            }
+            else
+            {
+                throw new NotImplementedException($"(array){from.Name}");
+            }
         }
 
         public void EmitAsPhpArray(BoundExpression expr)
@@ -690,7 +709,8 @@ namespace Pchp.CodeAnalysis.CodeGen
             // literals
             if (expr.ConstantValue.HasValue && to != null)    // <= (expr is BoundLiteral)
             {
-                //EmitLiteral(expr.ConstantValue.Value, to);
+                EmitConvert(EmitLoadConstant(expr.ConstantValue.Value, to), 0, to);
+                return;
             }
 
             //

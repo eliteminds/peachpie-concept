@@ -121,6 +121,39 @@ namespace Pchp.CodeAnalysis.CodeGen
         public void EmitStore(ILBuilder il) => il.EmitStoreArgumentOpcode(Index);
     }
 
+    internal class ArgPlace : IPlace
+    {
+        readonly int _index;
+        readonly TypeSymbol _type;
+
+        public int Index => _index;
+
+        public override string ToString() => $"${_index}";
+
+        public ArgPlace(TypeSymbol t, int index)
+        {
+            Contract.ThrowIfNull(t);
+            _type = t;
+            _index = index;
+        }
+
+        public TypeSymbol TypeOpt => _type;
+
+        public bool HasAddress => true;
+
+        public TypeSymbol EmitLoad(ILBuilder il)
+        {
+            il.EmitLoadArgumentOpcode(Index);
+            return _type;
+        }
+
+        public void EmitLoadAddress(ILBuilder il) => il.EmitLoadArgumentAddrOpcode(Index);
+
+        public void EmitStorePrepare(ILBuilder il) { }
+
+        public void EmitStore(ILBuilder il) => il.EmitStoreArgumentOpcode(Index);
+    }
+
     /// <summary>
     /// Place wrapper allowing only read operation.
     /// </summary>
@@ -144,7 +177,7 @@ namespace Pchp.CodeAnalysis.CodeGen
 
         public void EmitStore(ILBuilder il)
         {
-            throw new InvalidOperationException($"{_place} is readonly!");
+            throw new InvalidOperationException($"{_place} is readonly!");  // TODO: ErrCode
         }
 
         public void EmitStorePrepare(ILBuilder il) { }
@@ -166,9 +199,10 @@ namespace Pchp.CodeAnalysis.CodeGen
 
         void EmitHolder(ILBuilder il)
         {
+            Debug.Assert(_field.IsStatic == (_holder == null));
+
             if (_holder != null)
             {
-                Debug.Assert(!_field.IsStatic);
                 _holder.EmitLoad(il);
             }
         }
@@ -200,7 +234,11 @@ namespace Pchp.CodeAnalysis.CodeGen
             EmitOpCode(il, _field.IsStatic ? ILOpCode.Stsfld : ILOpCode.Stfld);
         }
 
-        public void EmitLoadAddress(ILBuilder il) => EmitOpCode(il, _field.IsStatic ? ILOpCode.Ldsflda : ILOpCode.Ldflda);
+        public void EmitLoadAddress(ILBuilder il)
+        {
+            EmitHolder(il);
+            EmitOpCode(il, _field.IsStatic ? ILOpCode.Ldsflda : ILOpCode.Ldflda);
+        }
     }
 
     internal class PropertyPlace : IPlace
@@ -281,7 +319,7 @@ namespace Pchp.CodeAnalysis.CodeGen
 
     #endregion
 
-    #region IBoundPlace
+    #region IBoundReference
 
     /// <summary>
     /// Helper object emitting value of a member instance.
@@ -453,9 +491,11 @@ namespace Pchp.CodeAnalysis.CodeGen
         TypeSymbol EmitLoad(CodeGenerator cg);
 
         /// <summary>
-        /// Emits code to storee a value to this place.
-        /// Expects <see cref="EmitPreamble(CodeGenerator)"/> and actual value to be loaded on stack.
+        /// Emits code to stores a value to this place.
+        /// Expects <see cref="EmitStorePrepare(CodeGenerator,InstanceCacheHolder)"/> and actual value to be loaded on stack.
         /// </summary>
+        /// <param name="cg">Code generator.</param>
+        /// <param name="valueType">Type of value on the stack to be stored. Can be <c>null</c> in case of <c>Unset</c> semantic.</param>
         void EmitStore(CodeGenerator cg, TypeSymbol valueType);
 
         ///// <summary>
@@ -660,16 +700,17 @@ namespace Pchp.CodeAnalysis.CodeGen
 
         public void EmitStorePrepare(CodeGenerator cg, InstanceCacheHolder instanceOpt)
         {
-            Debug.Assert(_access.IsWrite);
-            
             var type = _place.TypeOpt;
 
             if (_access.IsWriteRef)
             {
                 // no need for preparation
+                _place.EmitStorePrepare(cg.Builder);
             }
             else
             {
+                Debug.Assert(_access.IsWrite || _access.IsUnset);
+
                 //
                 if (type == cg.CoreTypes.PhpAlias)
                 {
@@ -683,18 +724,21 @@ namespace Pchp.CodeAnalysis.CodeGen
                         // Operators.SetValue(ref <place>, (PhpValue)<value>);
                         _place.EmitLoadAddress(cg.Builder);
                     }
+                    else
+                    {
+                        _place.EmitStorePrepare(cg.Builder);
+                    }
                 }
                 else
                 {
                     // no need for preparation
+                    _place.EmitStorePrepare(cg.Builder);
                 }
             }
         }
 
         public void EmitStore(CodeGenerator cg, TypeSymbol valueType)
         {
-            Debug.Assert(_access.IsWrite);
-
             var type = _place.TypeOpt;
 
             // Write Ref
@@ -726,8 +770,35 @@ namespace Pchp.CodeAnalysis.CodeGen
                     _place.EmitStore(cg.Builder);
                 }
             }
+            else if (_access.IsUnset)
+            {
+                Debug.Assert(valueType == null);
+
+                // <place> =
+
+                if (type == cg.CoreTypes.PhpAlias)
+                {
+                    // new PhpAlias(void)
+                    cg.Emit_PhpValue_Void();
+                    cg.Emit_PhpValue_MakeAlias();
+                }
+                else if (type.IsReferenceType)
+                {
+                    // null
+                    cg.Builder.EmitNullConstant();
+                }
+                else
+                {
+                    // default(T)
+                    cg.EmitLoadDefaultOfValueType(type);
+                }
+
+                _place.EmitStore(cg.Builder);
+            }
             else
             {
+                Debug.Assert(_access.IsWrite);
+
                 //
                 if (type == cg.CoreTypes.PhpAlias)
                 {
@@ -815,6 +886,8 @@ namespace Pchp.CodeAnalysis.CodeGen
 
             cg.EmitConvert(valueType, 0, setter.Parameters[0].Type);
             cg.EmitCall(setter.IsVirtual ? ILOpCode.Callvirt : ILOpCode.Call, setter);
+
+            // TODO: unset
         }
 
         public void EmitLoadPrepare(CodeGenerator cg, InstanceCacheHolder instanceOpt)
@@ -838,9 +911,14 @@ namespace Pchp.CodeAnalysis.CodeGen
 
             InstanceCacheHolder.EmitInstance(instanceOpt, cg, _instance);
         }
-    }
 
-    #endregion
+        public void EmitUnset(CodeGenerator cg)
+        {
+            var bound = (IBoundReference)this;
+            bound.EmitStorePrepare(cg);
+            bound.EmitStore(cg, cg.Emit_PhpValue_Void());
+        }
+    }
 
     internal class BoundSuperglobalPlace : IBoundReference
     {
@@ -886,16 +964,29 @@ namespace Pchp.CodeAnalysis.CodeGen
         #endregion
     }
 
-    internal class BoundGlobalPlace : IBoundReference
+    internal class BoundIndirectVariablePlace : IBoundReference
     {
         readonly BoundExpression _nameExpr;
         readonly BoundAccess _access;
 
-        public BoundGlobalPlace(BoundExpression nameExpr, BoundAccess access)
+        public BoundIndirectVariablePlace(BoundExpression nameExpr, BoundAccess access)
         {
             Contract.ThrowIfNull(nameExpr);
             _nameExpr = nameExpr;
             _access = access;
+        }
+
+        /// <summary>
+        /// Loads reference to <c>PhpArray</c> containing variables.
+        /// </summary>
+        /// <returns><c>PhpArray</c> type symbol.</returns>
+        protected virtual TypeSymbol LoadVariablesArray(CodeGenerator cg)
+        {
+            Debug.Assert(cg.LocalsPlaceOpt != null);
+            
+            // <locals>
+            return cg.LocalsPlaceOpt.EmitLoad(cg.Builder)
+                .Expect(cg.CoreTypes.PhpArray);
         }
 
         #region IBoundReference
@@ -906,18 +997,7 @@ namespace Pchp.CodeAnalysis.CodeGen
         {
             // Template: <variables> Key
 
-            if (cg.IsGlobalScope)
-            {
-                // <locals>
-                Debug.Assert(cg.LocalsPlaceOpt != null);
-                cg.LocalsPlaceOpt.EmitLoad(cg.Builder)
-                    .Expect(cg.CoreTypes.PhpArray);
-            }
-            else
-            {
-                // $GLOBALS
-                cg.EmitLoadGlobals();
-            }
+            LoadVariablesArray(cg);
 
             // key
             cg.EmitIntStringKey(_nameExpr);
@@ -957,7 +1037,7 @@ namespace Pchp.CodeAnalysis.CodeGen
             EmitPrepare(cg, instanceOpt);
         }
 
-        public void EmitStore(CodeGenerator cg, TypeSymbol valueType)
+        public virtual void EmitStore(CodeGenerator cg, TypeSymbol valueType)
         {
             // STACK: <PhpArray> <key>
 
@@ -973,6 +1053,13 @@ namespace Pchp.CodeAnalysis.CodeGen
                 // .SetItemAlias(key, alias)
                 cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.PhpArray.SetItemAlias_IntStringKey_PhpAlias);
             }
+            else if (_access.IsUnset)
+            {
+                Debug.Assert(valueType == null);
+
+                // .RemoveKey(key)
+                cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.PhpArray.RemoveKey_IntStringKey);
+            }
             else
             {
                 Debug.Assert(_access.IsWrite);
@@ -986,4 +1073,30 @@ namespace Pchp.CodeAnalysis.CodeGen
 
         #endregion
     }
+
+    internal class BoundGlobalPlace : BoundIndirectVariablePlace
+    {
+        public BoundGlobalPlace(BoundExpression nameExpr, BoundAccess access)
+            :base(nameExpr, access)
+        {
+        }
+
+        protected override TypeSymbol LoadVariablesArray(CodeGenerator cg)
+        {
+            if (cg.IsGlobalScope)
+            {
+                // <locals>
+                Debug.Assert(cg.LocalsPlaceOpt != null);
+                return cg.LocalsPlaceOpt.EmitLoad(cg.Builder)
+                    .Expect(cg.CoreTypes.PhpArray);
+            }
+            else
+            {
+                // $GLOBALS
+                return cg.EmitLoadGlobals();
+            }
+        }
+    }
+
+    #endregion
 }

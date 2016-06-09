@@ -20,7 +20,7 @@ namespace Pchp.CodeAnalysis.Emit
         internal void CreateEntryPoint(MethodSymbol method, DiagnosticBag diagnostic)
         {
             // "static void Main()"
-            var realmethod = new SynthesizedMethodSymbol(this.ScriptType, "Main", true, _compilation.CoreTypes.Void);
+            var realmethod = new SynthesizedMethodSymbol(this.ScriptType, "Main", true, false, _compilation.CoreTypes.Void);
 
             //
             var body = MethodGenerator.GenerateMethodBody(this, realmethod,
@@ -197,6 +197,42 @@ namespace Pchp.CodeAnalysis.Emit
                         il.EmitLoadToken(this, diagnostic, f.MainMethod, null);
                         il.EmitCall(this, diagnostic, ILOpCode.Callvirt, invoke);
                     }
+
+                    //
+                    il.EmitRet(true);
+                },
+                null, diagnostic, false);
+
+            SetMethodBody(method, body);
+        }
+
+        /// <summary>
+        /// Emit body of enumeration of app-wide global constants.
+        /// </summary>
+        internal void CreateEnumerateConstantsSymbol(DiagnosticBag diagnostic)
+        {
+            var method = this.ScriptType.EnumerateConstantsSymbol;
+            // var consts = this.Compilation. ...
+
+            // void (Action<string, RuntimeMethodHandle> callback)
+            var body = MethodGenerator.GenerateMethodBody(this, method,
+                (il) =>
+                {
+                    var action_string_method = method.Parameters[0].Type;
+                    Debug.Assert(action_string_method.Name == "Action");
+                    var invoke = action_string_method.DelegateInvokeMethod();
+                    Debug.Assert(invoke != null);
+
+                    // TODO:
+                    //foreach (var c in consts)
+                    //{
+                    //    // callback.Invoke(c.Name, c.Value, c.IgnoreCase)
+                    //    il.EmitLoadArgumentOpcode(0);
+                    //    il.EmitStringConstant(c.Name);
+                    //    // c.Value
+                    //    // c.IgnoreCase
+                    //    il.EmitCall(this, diagnostic, ILOpCode.Callvirt, invoke);
+                    //}
 
                     //
                     il.EmitRet(true);

@@ -90,7 +90,7 @@ namespace Pchp.CodeAnalysis.Symbols
         /// <c>.ctor</c> synthesized method.
         /// Only if type is not static.
         /// </summary>
-        internal MethodSymbol InstanceCtorMethodSymbol => this.IsStatic ? null : (_lazyCtorMethod ?? (_lazyCtorMethod = new SynthesizedCtorSymbol(this)));
+        internal MethodSymbol InstanceCtorMethodSymbol => this.IsStatic ? null : (_lazyCtorMethod ?? (_lazyCtorMethod = new SynthesizedCtorWrapperSymbol(this)));
 
         public override ImmutableArray<MethodSymbol> StaticConstructors
         {
@@ -275,15 +275,9 @@ namespace Pchp.CodeAnalysis.Symbols
         public override ImmutableArray<Symbol> GetMembers(string name)
             => Members().Where(s => s.Name.EqualsOrdinalIgnoreCase(name)).AsImmutable();
 
-        public override ImmutableArray<NamedTypeSymbol> GetTypeMembers()
-        {
-            return ImmutableArray<NamedTypeSymbol>.Empty;
-        }
+        public override ImmutableArray<NamedTypeSymbol> GetTypeMembers() => _lazyMembers.OfType<NamedTypeSymbol>().AsImmutable();
 
-        public override ImmutableArray<NamedTypeSymbol> GetTypeMembers(string name)
-        {
-            return ImmutableArray<NamedTypeSymbol>.Empty;
-        }
+        public override ImmutableArray<NamedTypeSymbol> GetTypeMembers(string name) => _lazyMembers.OfType<NamedTypeSymbol>().Where(t => t.Name.Equals(name, StringComparison.OrdinalIgnoreCase)).AsImmutable();
 
         internal override IEnumerable<IFieldSymbol> GetFieldsToEmit()
         {
@@ -326,15 +320,25 @@ namespace Pchp.CodeAnalysis.Symbols
             return _lazyCctorSymbol;
         }
 
-        SynthesizedFieldSymbol IWithSynthesized.CreateSynthesizedField(TypeSymbol type, string name, Accessibility accessibility, bool isstatic)
+        SynthesizedFieldSymbol IWithSynthesized.GetOrCreateSynthesizedField(TypeSymbol type, string name, Accessibility accessibility, bool isstatic)
         {
             GetMembers();
 
-            var field = new SynthesizedFieldSymbol(this, type, name, accessibility, isstatic);
-
-            _lazyMembers = _lazyMembers.Add(field);
+            var field = _lazyMembers.OfType<SynthesizedFieldSymbol>().FirstOrDefault(f => f.Name == name && f.IsStatic == isstatic && f.Type == type);
+            if (field == null)
+            {
+                field = new SynthesizedFieldSymbol(this, type, name, accessibility, isstatic);
+                _lazyMembers = _lazyMembers.Add(field);
+            }
 
             return field;
+        }
+
+        void IWithSynthesized.AddTypeMember(NamedTypeSymbol nestedType)
+        {
+            Contract.ThrowIfNull(nestedType);
+
+            _lazyMembers = _lazyMembers.Add(nestedType);
         }
     }
 }

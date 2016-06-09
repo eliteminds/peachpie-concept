@@ -207,6 +207,7 @@
     <Compile Include="Symbols\SubstitutedMethodSymbol.cs" />
     <Compile Include="Symbols\SubstitutedNamedTypeSymbol.cs" />
     <Compile Include="Symbols\SubstitutedParameterSymbol.cs" />
+    <Compile Include="Symbols\SubstitutedPropertySymbol.cs" />
     <Compile Include="Symbols\SubstitutedTypeParameterSymbol.cs" />
     <Compile Include="Symbols\Symbol.cs" />
     <Compile Include="Semantics\ISemanticModel.cs" />
@@ -222,6 +223,7 @@
     <Compile Include="Symbols\Synthesized\SynthesizedParameterSymbol.cs" />
     <Compile Include="Symbols\Synthesized\SynthesizedPropertySymbol.cs" />
     <Compile Include="Symbols\Synthesized\SynthesizedScriptTypeSymbol.cs" />
+    <Compile Include="Symbols\Synthesized\SynthesizedStaticLocHolder.cs" />
     <Compile Include="Symbols\Synthesized\SynthesizedSubstitutedTypeParameterSymbol.cs" />
     <Compile Include="Symbols\TypedConstantExtensions.cs" />
     <Compile Include="Symbols\TypeMap.cs" />

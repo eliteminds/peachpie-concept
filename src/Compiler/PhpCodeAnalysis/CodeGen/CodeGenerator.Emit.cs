@@ -25,7 +25,25 @@ namespace Pchp.CodeAnalysis.CodeGen
         /// </summary>
         public TypeSymbol EmitLoadContext()
         {
+            if (_contextPlace == null)
+                throw new InvalidOperationException("Context is not available.");
+
             return _contextPlace.EmitLoad(_il);
+        }
+
+        public void EmitCallerRuntimeTypeHandle()
+        {
+            var caller = this.CallerType;
+            if (caller != null)
+            {
+                // RuntimeTypeHandle
+                EmitLoadToken(caller, null);
+            }
+            else
+            {
+                // default(RuntimeTypeHandle)
+                EmitLoadDefaultOfValueType(this.CoreTypes.RuntimeTypeHandle);
+            }
         }
 
         /// <summary>
@@ -45,6 +63,13 @@ namespace Pchp.CodeAnalysis.CodeGen
         /// Always valid in context of global scope.
         /// </summary>
         public IPlace LocalsPlaceOpt => _localsPlaceOpt;
+
+        /// <summary>
+        /// Gets value indicating the routine uses unoptimized locals access.
+        /// This means, all the local variables are stored within an associative array instead of local slots.
+        /// This value implicates, <see cref="LocalsPlaceOpt"/> is not <c>null</c>.
+        /// </summary>
+        public bool HasUnoptimizedLocals => LocalsPlaceOpt != null;
 
         /// <summary>
         /// Emits reference to <c>this</c>.
@@ -83,7 +108,7 @@ namespace Pchp.CodeAnalysis.CodeGen
             }
             else
             {
-                // we has to call expr.Emit() to generate ensureness correctly (Ensure Object, Ensure Array, Read Alias)
+                // we have to call expr.Emit() to generate ensureness correctly (Ensure Object, Ensure Array, Read Alias)
                 return null;
             }
         }
@@ -93,7 +118,7 @@ namespace Pchp.CodeAnalysis.CodeGen
         /// </summary>
         internal TypeSymbol TryEmitVariableSpecialize(IPlace place, TypeRefMask tmask)
         {
-            if (place != null && tmask.IsSingleType)
+            if (place != null && tmask.IsSingleType && !tmask.IsRef)
             {
                 if (place.HasAddress)
                 {
@@ -181,7 +206,9 @@ namespace Pchp.CodeAnalysis.CodeGen
         /// <returns>New type on top of evaluation stack.</returns>
         internal TypeSymbol EmitSpecialize(BoundExpression expr)
         {
-            if (expr.Access.IsNone)
+            bool IsGlobalVariable = expr is BoundVariableRef && ((BoundVariableRef)expr).Variable is BoundGlobalVariable;
+
+            if (expr.Access.IsNone || IsGlobalVariable)
             {
                 return (expr.ResultType = expr.Emit(this));
             }
@@ -202,7 +229,7 @@ namespace Pchp.CodeAnalysis.CodeGen
         internal TypeSymbol EmitSpecialize(TypeSymbol stack, TypeRefMask tmask)
         {
             // specialize type if possible
-            if (tmask.IsSingleType)
+            if (tmask.IsSingleType && !tmask.IsRef)
             {
                 if (stack == this.CoreTypes.PhpNumber)
                 {
@@ -414,6 +441,16 @@ namespace Pchp.CodeAnalysis.CodeGen
             _il.EmitOpCode(ILOpCode.Ceq);
         }
 
+        /// <summary>
+        /// Loads field address on top of evaluation stack.
+        /// </summary>
+        public void EmitFieldAddress(FieldSymbol fld)
+        {
+            Debug.Assert(fld != null);
+            _il.EmitOpCode(fld.IsStatic ? ILOpCode.Ldsflda : ILOpCode.Ldflda);
+            EmitSymbolToken(fld, null);
+        }
+
         internal void EmitSymbolToken(TypeSymbol symbol, SyntaxNode syntaxNode)
         {
             _il.EmitSymbolToken(_moduleBuilder, _diagnostics, symbol, syntaxNode);
@@ -528,6 +565,20 @@ namespace Pchp.CodeAnalysis.CodeGen
             return CoreTypes.PhpValue;
         }
 
+        public void EmitUnset(BoundReferenceExpression expr)
+        {
+            Debug.Assert(expr != null);
+
+            if (!expr.Access.IsUnset)
+                throw new ArgumentException();
+
+            var place = expr.BindPlace(this);
+            Debug.Assert(place != null);
+
+            place.EmitStorePrepare(this);
+            place.EmitStore(this, null);
+        }
+
         /// <summary>
         /// Emits call to given method.
         /// </summary>
@@ -578,11 +629,16 @@ namespace Pchp.CodeAnalysis.CodeGen
             {
                 var p = parameters[param_index];
 
-                // <ctx>
-                if (p.Type == CoreTypes.Context)
+                // special synthesized parameters
+                if (param_index == 0)
                 {
-                    EmitLoadContext();
-                    continue;
+                    // <ctx>
+                    if (p.Type == CoreTypes.Context)
+                    {
+                        EmitLoadContext();
+                        continue;
+                    }
+                    // TypeCtx, Locals, ...
                 }
 
                 // all arguments loaded
@@ -592,11 +648,19 @@ namespace Pchp.CodeAnalysis.CodeGen
                 }
                 else
                 {
-                    EmitLoadDefaultValue(p.Type, 0);
+                    if (p.HasExplicitDefaultValue)
+                    {
+                        EmitConvert(EmitLoadConstant(p.ExplicitDefaultValue, p.Type), 0, p.Type);
+                    }
+                    else
+                    {
+                        EmitLoadDefaultValue(p.Type, 0);
+                    }
                 }
             }
 
             // emit remaining not used arguments
+            // TODO: params
             for (; arg_index < arguments.Length; arg_index++)
             {
                 EmitPop(Emit(arguments[arg_index]));
@@ -705,6 +769,29 @@ namespace Pchp.CodeAnalysis.CodeGen
             }
         }
 
+        internal TypeSymbol EmitGetProperty(IPlace holder, PropertySymbol prop)
+        {
+            Debug.Assert(prop.IsStatic || holder != null);
+            Debug.Assert(prop.GetMethod != null);
+            Debug.Assert(prop.GetMethod.ParameterCount == 0);
+
+            if (holder != null)
+            {
+                Debug.Assert(holder.TypeOpt != null);
+                if (holder.TypeOpt.IsValueType)
+                {
+                    holder.EmitLoadAddress(_il);
+                }
+                else
+                {
+                    holder.EmitLoad(_il);
+                }
+            }
+            var getter = prop.GetMethod;
+
+            return EmitCall(getter.IsVirtual ? ILOpCode.Callvirt : ILOpCode.Call, getter);
+        }
+        
         internal void EmitCastClass(TypeSymbol from, TypeSymbol to)
         {
             if (!from.IsEqualToOrDerivedFrom(to))
@@ -858,9 +945,11 @@ namespace Pchp.CodeAnalysis.CodeGen
                 case SpecialType.System_String:
                     EmitCall(ILOpCode.Newobj, CoreMethods.Ctors.IntStringKey_string);
                     break;
+                default:
+                    EmitConvertToPhpValue(t, 0);
+                    EmitCall(ILOpCode.Call, CoreMethods.Operators.ToIntStringKey_PhpValue);
+                    break;
             }
-            // .call Convert.ToArrayKey(<t>)
-            throw new NotImplementedException();
         }
 
         /// <summary>
@@ -915,6 +1004,101 @@ namespace Pchp.CodeAnalysis.CodeGen
             return EmitCall(ILOpCode.Call, mainmethod);
         }
 
+        public TypeSymbol EmitLoadConstant(object value, TypeSymbol targetOpt = null)
+        {
+            if (value == null)
+            {
+                if (targetOpt == CoreTypes.PhpValue)
+                {
+                    return Emit_PhpValue_Null();
+                }
+
+                Builder.EmitNullConstant();
+                return CoreTypes.Object;
+            }
+            else
+            {
+                if (value is int)
+                {
+                    if (targetOpt != null)
+                    {
+                        switch (targetOpt.SpecialType)
+                        {
+                            case SpecialType.System_Boolean:
+                                _il.EmitBoolConstant((int)value != 0);
+                                return targetOpt;
+                            case SpecialType.System_String:
+                                _il.EmitStringConstant(value.ToString());
+                                return targetOpt;
+                        }
+                    }
+
+                    Builder.EmitIntConstant((int)value);
+                    return CoreTypes.Int32;
+                }
+                else if (value is long)
+                {
+                    if (targetOpt != null)
+                    {
+                        switch (targetOpt.SpecialType)
+                        {
+                            case SpecialType.System_Boolean:
+                                _il.EmitBoolConstant((long)value != 0);
+                                return targetOpt;
+                            case SpecialType.System_String:
+                                _il.EmitStringConstant(value.ToString());
+                                return targetOpt;
+                        }
+                    }
+
+                    Builder.EmitLongConstant((long)value);
+                    return CoreTypes.Long;
+                }
+                else if (value is string)
+                {
+                    Builder.EmitStringConstant((string)value);
+                    return CoreTypes.String;
+                }
+                else if (value is bool)
+                {
+                    if (targetOpt != null)
+                    {
+                        switch (targetOpt.SpecialType)
+                        {
+                            case SpecialType.System_String:
+                                _il.EmitStringConstant((bool)value ? "1" : "");
+                                return targetOpt;
+                        }
+                    }
+
+                    Builder.EmitBoolConstant((bool)value);
+                    return CoreTypes.Boolean;
+                }
+                else if (value is double)
+                {
+                    if (targetOpt != null)
+                    {
+                        switch (targetOpt.SpecialType)
+                        {
+                            case SpecialType.System_Boolean:
+                                _il.EmitBoolConstant((double)value != 0.0);
+                                return targetOpt;
+                            case SpecialType.System_Int64:
+                                _il.EmitLongConstant((long)(double)value);
+                                return targetOpt;
+                        }
+                    }
+
+                    Builder.EmitDoubleConstant((double)value);
+                    return CoreTypes.Double;
+                }
+                else
+                {
+                    throw new NotImplementedException();
+                }
+            }
+        }
+
         public void EmitLoadDefaultValue(TypeSymbol type, TypeRefMask typemask)
         {
             switch (type.SpecialType)
@@ -957,13 +1141,7 @@ namespace Pchp.CodeAnalysis.CodeGen
                     }
                     else
                     {
-                        if (type == CoreTypes.PhpNumber)
-                        {
-                            // PhpNumber.Create(0L)
-                            _il.EmitLongConstant(0L);
-                            EmitCall(ILOpCode.Call, CoreMethods.PhpNumber.Create_Long);
-                        }
-                        else if (type == CoreTypes.PhpValue)
+                        if (type == CoreTypes.PhpValue)
                         {
                             var typectx = this.Routine.ControlFlowGraph.FlowContext.TypeRefContext;
 
@@ -1000,10 +1178,44 @@ namespace Pchp.CodeAnalysis.CodeGen
                         }
                         else
                         {
-                            throw new NotImplementedException();    // default(T)
+                            EmitLoadDefaultOfValueType(type);
                         }
                     }
                     break;
+            }
+        }
+
+        /// <summary>
+        /// Emits <c>default(valuetype)</c>.
+        /// </summary>
+        public void EmitLoadDefaultOfValueType(TypeSymbol valuetype)
+        {
+            Debug.Assert(valuetype != null && valuetype.IsValueType);
+
+            if (valuetype == CoreTypes.PhpNumber)
+            {
+                // PhpNumber.Create(0L)
+                _il.EmitLongConstant(0L);
+                EmitCall(ILOpCode.Call, CoreMethods.PhpNumber.Create_Long);
+            }
+            else if (valuetype == CoreTypes.PhpValue)
+            {
+                // PhpValue.Void
+                Emit_PhpValue_Void();
+            }
+            else
+            {
+                // default(T)
+
+                var loc = this.GetTemporaryLocal(valuetype, true);
+
+                // ldloca <loc>
+                // .initobj <type>
+                Builder.EmitLocalAddress(loc);
+                Builder.EmitOpCode(ILOpCode.Initobj);
+                EmitSymbolToken(valuetype, null);
+                // ldloc <loc>
+                Builder.EmitLocalLoad(loc);
             }
         }
 

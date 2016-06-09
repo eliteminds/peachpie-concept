@@ -19,13 +19,16 @@ namespace Pchp.CodeAnalysis.Semantics
     {
         readonly Symbols.SourceRoutineSymbol _routine;
 
+        readonly FlowAnalysis.FlowContext _flowCtx;
+
         #region Construction
 
-        public SemanticsBinder(Symbols.SourceRoutineSymbol routine /*PhpCompilation compilation, AST.GlobalCode ast, bool ignoreAccessibility*/)
+        public SemanticsBinder(Symbols.SourceRoutineSymbol routine, FlowAnalysis.FlowContext flowCtx = null /*PhpCompilation compilation, AST.GlobalCode ast, bool ignoreAccessibility*/)
         {
             Contract.ThrowIfNull(routine);
 
             _routine = routine;
+            _flowCtx = flowCtx;
         }
 
         #endregion
@@ -72,6 +75,17 @@ namespace Pchp.CodeAnalysis.Semantics
             if (stmt is AST.JumpStmt) return BindJumpStmt((AST.JumpStmt)stmt);
             if (stmt is AST.FunctionDecl) return BindFunctionDecl((AST.FunctionDecl)stmt);
             if (stmt is AST.TypeDecl) return BindTypeDecl((AST.TypeDecl)stmt);
+            if (stmt is AST.GlobalStmt) return new BoundEmptyStatement();
+            if (stmt is AST.StaticStmt) return new BoundStaticVariableStatement(
+                ((AST.StaticStmt)stmt).StVarList
+                    .Select(s => (BoundStaticLocal)_flowCtx.GetVar(s.Variable.VarName.Value))
+                    .ToImmutableArray())
+                { PhpSyntax = stmt };
+            if (stmt is AST.UnsetStmt) return new BoundUnset(
+                ((AST.UnsetStmt)stmt).VarList
+                    .Select(v => (BoundReferenceExpression)BindExpression(v, BoundAccess.Unset))
+                    .ToImmutableArray())
+                { PhpSyntax = stmt };
 
             throw new NotImplementedException(stmt.GetType().FullName);
         }
@@ -105,6 +119,14 @@ namespace Pchp.CodeAnalysis.Semantics
             //return new BoundTypeDeclStatement(stmt.GetProperty<Symbols.SourceNamedTypeSymbol>());
         }
 
+        public BoundVariableRef BindCatchVariable(AST.CatchItem x)
+        {
+            var tmask = _flowCtx.TypeRefContext.GetTypeMask(x.TypeRef, true);
+
+            return new BoundVariableRef(x.Variable.VarName.Value)
+                .WithAccess(BoundAccess.Write.WithWrite(tmask));
+        }
+
         public BoundExpression BindExpression(AST.Expression expr, BoundAccess access)
         {
             var bound = BindExpressionCore(expr, access).WithAccess(access);
@@ -129,8 +151,22 @@ namespace Pchp.CodeAnalysis.Semantics
             if (expr is AST.IncludingEx) return BindIncludeEx((AST.IncludingEx)expr).WithAccess(access);
             if (expr is AST.InstanceOfEx) return BindInstanceOfEx((AST.InstanceOfEx)expr).WithAccess(access);
             if (expr is AST.PseudoConstUse) return BindPseudoConst((AST.PseudoConstUse)expr).WithAccess(access);
+            if (expr is AST.IssetEx) return BindIsSet((AST.IssetEx)expr).WithAccess(access);
+            if (expr is AST.ExitEx) return BindExitEx((AST.ExitEx)expr).WithAccess(access);
 
             throw new NotImplementedException(expr.GetType().FullName);
+        }
+
+        BoundExpression BindExitEx(AST.ExitEx x)
+        {
+            return (x.ResulExpr != null)
+                ? new BoundExitEx(BindExpression(x.ResulExpr))
+                : new BoundExitEx();
+        }
+
+        BoundExpression BindIsSet(AST.IssetEx x)
+        {
+            return new BoundIsSetEx(x.VarList.Select(v => (BoundReferenceExpression)BindExpression(v, BoundAccess.Read.WithQuiet())).ToImmutableArray());
         }
 
         BoundExpression BindPseudoConst(AST.PseudoConstUse x)
@@ -142,8 +178,9 @@ namespace Pchp.CodeAnalysis.Semantics
                 case AST.PseudoConstUse.Types.Line:
                     return new BoundLiteral(unit.LineBreaks.GetLineFromPosition(x.Span.Start) + 1);
 
+                case AST.PseudoConstUse.Types.Dir:
                 case AST.PseudoConstUse.Types.File:
-                    goto default;    // ROOT + file.Relative
+                    return new BoundPseudoConst(x.Type);
 
                 case AST.PseudoConstUse.Types.Function:
                     if (_routine is Symbols.SourceFunctionSymbol || _routine is Symbols.SourceMethodSymbol)
@@ -186,7 +223,7 @@ namespace Pchp.CodeAnalysis.Semantics
 
         BoundRoutineCall BindFunctionCall(AST.FunctionCall x, BoundAccess access)
         {
-            if (access.IsWrite)
+            if (!access.IsRead && !access.IsNone)
             {
                 throw new NotSupportedException();
             }
@@ -244,7 +281,7 @@ namespace Pchp.CodeAnalysis.Semantics
                 kind = (expr.Post) ? UnaryOperationKind.OperatorPostfixIncrement : UnaryOperationKind.OperatorPrefixIncrement;
             else
                 kind = (expr.Post) ? UnaryOperationKind.OperatorPostfixDecrement : UnaryOperationKind.OperatorPrefixDecrement;
-            
+
             //
             return new BoundIncDecEx(varref, kind);
         }
@@ -309,8 +346,8 @@ namespace Pchp.CodeAnalysis.Semantics
 
             if (access.IsWrite || access.EnsureObject || access.EnsureArray)
                 arrayAccess = arrayAccess.WithEnsureArray();
-            if (access.IsCheck)
-                arrayAccess = arrayAccess.WithCheck();
+            if (access.IsQuiet)
+                arrayAccess = arrayAccess.WithQuiet();
 
             var boundArray = BindExpression(x.Array, arrayAccess);
 
@@ -333,8 +370,8 @@ namespace Pchp.CodeAnalysis.Semantics
 
                 if (access.IsWrite || access.EnsureObject || access.EnsureArray)
                     instanceAccess = instanceAccess.WithEnsureObject();
-                if (access.IsCheck)
-                    instanceAccess = instanceAccess.WithCheck();
+                if (access.IsQuiet)
+                    instanceAccess = instanceAccess.WithQuiet();
 
                 return new BoundFieldRef(expr.VarName, BindExpression(expr.IsMemberOf, instanceAccess)).WithAccess(access);
             }
@@ -348,7 +385,7 @@ namespace Pchp.CodeAnalysis.Semantics
             if (expr.Name == QualifiedName.Null) return new BoundLiteral(null);
 
             // bind constant
-            throw new NotImplementedException();
+            return new BoundGlobalConst(expr.Name.ToString());
         }
 
         BoundExpression BindBinaryEx(AST.BinaryEx expr)
@@ -367,6 +404,9 @@ namespace Pchp.CodeAnalysis.Semantics
             {
                 case AST.Operations.AtSign:
                     operandAccess = access;
+                    break;
+                case AST.Operations.UnsetCast:
+                    operandAccess = BoundAccess.None;
                     break;
             }
 

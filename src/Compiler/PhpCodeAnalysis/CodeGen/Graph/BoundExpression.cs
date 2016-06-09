@@ -177,22 +177,16 @@ namespace Pchp.CodeAnalysis.Semantics
 
                 case Operations.Identical:
 
-                    //// LOAD Operators.StrictEquality(box left,box right);
-                    //returned_typecode = EmitStrictEquality(node, codeGenerator);
-                    //break;
-                    throw new NotImplementedException();
+                    // Left === Right
+                    returned_type = EmitStrictEquality(cg);
+                    break;
 
                 case Operations.NotIdentical:
 
-                    //// LOAD Operators.StrictEquality(box left,box right) == false;
-                    //EmitStrictEquality(node, codeGenerator);
-
-                    //codeGenerator.IL.Emit(OpCodes.Ldc_I4_0);
-                    //codeGenerator.IL.Emit(OpCodes.Ceq);
-
-                    //returned_typecode = PhpTypeCode.Boolean;
-                    //break;
-                    throw new NotImplementedException();
+                    // ! (Left === Right)
+                    returned_type = EmitStrictEquality(cg);
+                    cg.EmitLogicNegation();
+                    break;
 
                 #endregion
 
@@ -483,11 +477,11 @@ namespace Pchp.CodeAnalysis.Semantics
             var end_label = new object();
 
             // IF [!]<(bool) Left> THEN GOTO partial_eval;
-            cg.EmitConvertToBool(Left);
+            cg.EmitConvert(Left, cg.CoreTypes.Boolean);
             il.EmitBranch(isAnd ? ILOpCode.Brfalse : ILOpCode.Brtrue, partial_eval_label);
 
             // <RESULT> = <(bool) Right>;
-            cg.EmitConvertToBool(Right);
+            cg.EmitConvert(Right, cg.CoreTypes.Boolean);
 
             // GOTO end;
             il.EmitBranch(ILOpCode.Br, end_label);
@@ -510,8 +504,8 @@ namespace Pchp.CodeAnalysis.Semantics
         TypeSymbol EmitBinaryXor(CodeGenerator cg)
         {
             // LOAD <(bool) leftSon> == <(bool) rightSon>;
-            cg.EmitConvertToBool(Left);
-            cg.EmitConvertToBool(Right);
+            cg.EmitConvert(Left, cg.CoreTypes.Boolean);
+            cg.EmitConvert(Right, cg.CoreTypes.Boolean);
             cg.EmitOpCode(ILOpCode.Ceq);
 
             cg.EmitOpCode(ILOpCode.Ldc_i4_0);
@@ -545,29 +539,289 @@ namespace Pchp.CodeAnalysis.Semantics
         /// </summary>
         internal static TypeSymbol EmitEquality(CodeGenerator cg, TypeSymbol xtype, BoundExpression right)
         {
-            if (xtype.SpecialType == SpecialType.System_Double)
-            {
-                cg.EmitConvert(right, cg.CoreTypes.Double);    // TODO: only value types, otherwise fallback to generic CompareOp(double, object)
-                cg.Builder.EmitOpCode(ILOpCode.Ceq);
-            }
-            else if (xtype.SpecialType == SpecialType.System_Int64)
-            {
-                cg.EmitConvert(right, cg.CoreTypes.Long);    // TODO: only value types, otherwise fallback to generic CompareOp(double, object)
-                cg.Builder.EmitOpCode(ILOpCode.Ceq);
-            }
-            else if (xtype == cg.CoreTypes.PhpNumber)
-            {
-                cg.EmitConvert(right, cg.CoreTypes.PhpNumber); // TODO: only value types, otherwise fallback to generic CompareOp(double, object)
-                cg.EmitCall(ILOpCode.Call, cg.CoreMethods.PhpNumber.Eq_number_number)
-                    .Expect(SpecialType.System_Boolean);
-            }
-            else
-            {
-                throw new NotImplementedException();
-            }
+            TypeSymbol ytype;
 
-            //
-            return cg.CoreTypes.Boolean;
+            switch (xtype.SpecialType)
+            {
+                case SpecialType.System_Boolean:
+
+                    // bool == y.ToBoolean()
+                    cg.EmitConvert(right, cg.CoreTypes.Boolean);
+                    cg.Builder.EmitOpCode(ILOpCode.Ceq);
+
+                    return cg.CoreTypes.Boolean;
+
+                case SpecialType.System_Int32:
+                    // i4 -> i8
+                    cg.Builder.EmitOpCode(ILOpCode.Conv_i8);
+                    goto case SpecialType.System_Int64;
+
+                case SpecialType.System_Int64:
+
+                    ytype = cg.Emit(right);
+
+                    //
+                    if (ytype.SpecialType == SpecialType.System_Int32)
+                    {
+                        cg.Builder.EmitOpCode(ILOpCode.Conv_i8);    // i4 -> i8
+                        ytype = cg.CoreTypes.Long;
+                    }
+
+                    //
+                    if (ytype.SpecialType == SpecialType.System_Int64)
+                    {
+                        // i8 == i8
+                        cg.Builder.EmitOpCode(ILOpCode.Ceq);
+                        return cg.CoreTypes.Boolean;
+                    }
+                    else if (ytype.SpecialType == SpecialType.System_Double)
+                    {
+                        // i8 == r8
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Ceq_long_double)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+                    else if (ytype.SpecialType == SpecialType.System_Boolean)
+                    {
+                        // i8 == bool
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Ceq_long_bool)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+                    else if (ytype.SpecialType == SpecialType.System_String)
+                    {
+                        // i8 == string
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Ceq_long_string)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+
+                    // value
+                    ytype = cg.EmitConvertToPhpValue(ytype, 0);
+
+                    // compare(i8, value) == 0
+                    cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_long_value);
+                    cg.EmitLogicNegation();
+
+                    return cg.CoreTypes.Boolean;
+
+                case SpecialType.System_Double:
+
+                    ytype = cg.EmitConvertNumberToDouble(right);  // bool|long|int -> double
+
+                    if (ytype.SpecialType == SpecialType.System_Double)
+                    {
+                        // r8 == r8
+                        cg.Builder.EmitOpCode(ILOpCode.Ceq);
+                        return cg.CoreTypes.Boolean;
+                    }
+                    else if (ytype.SpecialType == SpecialType.System_String)
+                    {
+                        // r8 == string
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Ceq_double_string)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+
+                    // value
+                    ytype = cg.EmitConvertToPhpValue(ytype, 0);
+
+                    // compare(double, value) == 0
+                    cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_double_value);
+                    cg.EmitLogicNegation();
+
+                    return cg.CoreTypes.Boolean;
+
+                case SpecialType.System_String:
+
+                    ytype = cg.Emit(right);
+
+                    if (ytype.SpecialType == SpecialType.System_Int32)
+                    {
+                        // i4 -> i8
+                        cg.Builder.EmitOpCode(ILOpCode.Conv_i8);
+                        ytype = cg.CoreTypes.Long;
+                    }
+
+                    if (ytype.SpecialType == SpecialType.System_Int64)
+                    {
+                        // string == i8
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Ceq_string_long)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+                    else if (ytype.SpecialType == SpecialType.System_Boolean)
+                    {
+                        // string == bool
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Ceq_string_bool)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+                    else if (ytype.SpecialType == SpecialType.System_Double)
+                    {
+                        // string == r8
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Ceq_string_double)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+
+                    // value
+                    ytype = cg.EmitConvertToPhpValue(ytype, 0);
+
+                    // compare(string, value) == 0
+                    cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_string_value);
+                    cg.EmitLogicNegation();
+                    return cg.CoreTypes.Boolean;
+
+                //case SpecialType.System_Object:
+                //    goto default;
+
+                default:
+
+                    // TODO: xtype: PhpNumber, PhpArray, ...
+
+                    xtype = cg.EmitConvertToPhpValue(xtype, 0);
+
+                    // TODO: overloads for type of <right>
+
+                    ytype = cg.EmitConvertToPhpValue(cg.Emit(right), right.TypeRefMask);
+
+                    // value == value
+                    return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.PhpValue.Eq_PhpValue_PhpValue)
+                        .Expect(SpecialType.System_Boolean);
+            }
+        }
+
+        TypeSymbol EmitStrictEquality(CodeGenerator cg)
+            => EmitStrictEquality(cg, Left, Right);
+
+        internal static TypeSymbol EmitStrictEquality(CodeGenerator cg, BoundExpression left, BoundExpression right)
+            => EmitStrictEquality(cg, cg.Emit(left), right);
+
+        internal static TypeSymbol EmitStrictEquality(CodeGenerator cg, TypeSymbol xtype, BoundExpression right)
+        {
+            TypeSymbol ytype;
+
+            switch (xtype.SpecialType)
+            {
+                case SpecialType.System_Boolean:
+                    ytype = cg.Emit(right);
+                    if (ytype.SpecialType == SpecialType.System_Boolean)
+                    {
+                        // bool == bool
+                        cg.Builder.EmitOpCode(ILOpCode.Ceq);
+                        return cg.CoreTypes.Boolean;
+                    }
+                    else if (
+                        ytype.SpecialType == SpecialType.System_Double ||
+                        ytype.SpecialType == SpecialType.System_Int32 ||
+                        ytype.SpecialType == SpecialType.System_Int64 ||
+                        ytype.SpecialType == SpecialType.System_String ||
+                        ytype == cg.CoreTypes.PhpArray ||
+                        ytype == cg.CoreTypes.PhpString ||
+                        ytype == cg.CoreTypes.Object)
+                    {
+                        // bool == something else => false
+                        cg.EmitPop(ytype);
+                        cg.EmitPop(xtype);
+                        cg.Builder.EmitBoolConstant(false);
+                        return cg.CoreTypes.Boolean;
+                    }
+                    else
+                    {
+                        // bool == PhpValue
+                        cg.EmitConvertToPhpValue(ytype, 0);
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.StrictCeq_bool_PhpValue)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+
+                case SpecialType.System_Int32:
+                    cg.Builder.EmitOpCode(ILOpCode.Conv_i8);    // i4 -> i8
+                    goto case SpecialType.System_Int64;
+
+                case SpecialType.System_Int64:
+                    ytype = cg.Emit(right);
+                    if (ytype.SpecialType == SpecialType.System_Int32)
+                    {
+                        cg.Builder.EmitOpCode(ILOpCode.Conv_i8);    // i4 -> i8
+                        ytype = cg.CoreTypes.Long;
+                    }
+
+                    if (ytype.SpecialType == SpecialType.System_Int64)
+                    {
+                        // i8 == i8
+                        cg.Builder.EmitOpCode(ILOpCode.Ceq);
+                        return cg.CoreTypes.Boolean;
+                    }
+                    else if (
+                        ytype.SpecialType == SpecialType.System_Boolean ||
+                        ytype.SpecialType == SpecialType.System_String ||
+                        ytype.SpecialType == SpecialType.System_Double ||
+                        ytype == cg.CoreTypes.Object ||
+                        ytype == cg.CoreTypes.PhpArray ||
+                        ytype == cg.CoreTypes.PhpString)
+                    {
+                        // i8 == something else => false
+                        cg.EmitPop(ytype);
+                        cg.EmitPop(xtype);
+                        cg.Builder.EmitBoolConstant(false);
+                        return cg.CoreTypes.Boolean;
+                    }
+                    else
+                    {
+                        // i8 == PhpValue
+                        cg.EmitConvertToPhpValue(ytype, 0);
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.StrictCeq_long_PhpValue)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+
+                case SpecialType.System_Double:
+                    ytype = cg.Emit(right);
+                    if (ytype.SpecialType == SpecialType.System_Double)
+                    {
+                        // r8 == r8
+                        cg.Builder.EmitOpCode(ILOpCode.Ceq);
+                        return cg.CoreTypes.Boolean;
+                    }
+                    else if (
+                        ytype.SpecialType == SpecialType.System_Boolean ||
+                        ytype.SpecialType == SpecialType.System_String ||
+                        ytype.SpecialType == SpecialType.System_Int64 ||
+                        ytype.SpecialType == SpecialType.System_Int32 ||
+                        ytype == cg.CoreTypes.Object ||
+                        ytype == cg.CoreTypes.PhpArray ||
+                        ytype == cg.CoreTypes.PhpString)
+                    {
+                        // r8 == something else => false
+                        cg.EmitPop(ytype);
+                        cg.EmitPop(xtype);
+                        cg.Builder.EmitBoolConstant(false);
+                        return cg.CoreTypes.Boolean;
+                    }
+                    else
+                    {
+                        // r8 == PhpValue
+                        cg.EmitConvertToPhpValue(ytype, 0);
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.StrictCeq_double_PhpValue)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+
+                default:
+
+                    // TODO: PhpArray, Object === ...
+
+                    xtype = cg.EmitConvertToPhpValue(xtype, 0);
+
+                    ytype = cg.Emit(right);
+
+                    if (ytype.SpecialType == SpecialType.System_Boolean)
+                    {
+                        // PhpValue == bool
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.StrictCeq_PhpValue_bool)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+                    else
+                    {
+                        ytype = cg.EmitConvertToPhpValue(ytype, 0);
+
+                        // PhpValue == PhpValue
+                        return cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.StrictCeq_PhpValue_PhpValue)
+                            .Expect(SpecialType.System_Boolean);
+                    }
+            }
         }
 
         /// <summary>
@@ -603,41 +857,89 @@ namespace Pchp.CodeAnalysis.Semantics
 
                 case SpecialType.System_Int64:
                     ytype = cg.EmitConvertIntToLong(cg.Emit(right));    // bool|int -> long
-                    switch (ytype.SpecialType)
+                    if (ytype.SpecialType == SpecialType.System_Int64)
                     {
-                        case SpecialType.System_Int64:
-                            il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
-                            break;
-
-                        case SpecialType.System_Double:
-                            // i8 <> r8
-                            return cg.EmitCall(ILOpCode.Call, lt
-                                ? cg.CoreMethods.Operators.Clt_long_double
-                                : cg.CoreMethods.Operators.Cgt_long_double);
-
-                        default:
-                            throw new NotImplementedException($"compare(long, {ytype.Name})");
+                        il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
                     }
-                    break;
+                    else if (ytype.SpecialType == SpecialType.System_Double)
+                    {
+                        // i8 <> r8
+                        return cg.EmitCall(ILOpCode.Call, lt
+                            ? cg.CoreMethods.Operators.Clt_long_double
+                            : cg.CoreMethods.Operators.Cgt_long_double);
+                    }
+                    else
+                    {
+                        ytype = cg.EmitConvertToPhpValue(ytype, 0);
+
+                        // compare(i8, value) <> 0
+                        cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_long_value);
+
+                        il.EmitOpCode(ILOpCode.Ldc_i4_0, 1);
+                        il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
+                    }
+                    return cg.CoreTypes.Boolean;
 
                 case SpecialType.System_Double:
                     ytype = cg.EmitConvertNumberToDouble(right);    // bool|int|long|number -> double
-                    switch (ytype.SpecialType)
+                    if (ytype.SpecialType == SpecialType.System_Double)
                     {
-                        case SpecialType.System_Double:
-                            // r8 <> r8
-                            il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
-                            break;
-                        default:
-                            throw new NotImplementedException($"compare(double, {ytype.Name})");
+                        // r8 <> r8
+                        il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
                     }
-                    break;
+                    else
+                    {
+                        // compare(r8, value)
+                        ytype = cg.EmitConvertToPhpValue(ytype, 0);
+                        cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_double_value);
+
+                        // <> 0
+                        il.EmitOpCode(ILOpCode.Ldc_i4_0, 1);
+                        il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
+                    }
+                    return cg.CoreTypes.Boolean;
 
                 case SpecialType.System_String:
-                    throw new NotImplementedException($"compare(string, ...)");
+                    ytype = cg.Emit(right);
+                    if (ytype.SpecialType == SpecialType.System_String)
+                    {
+                        // compare(string, string)
+                        cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_string_string);
+                    }
+                    else if (ytype.SpecialType == SpecialType.System_Int64)
+                    {
+                        // compare(string, long)
+                        cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_string_long);
+                    }
+                    else if (ytype.SpecialType == SpecialType.System_Double)
+                    {
+                        // compare(string, double)
+                        cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_string_double);
+                    }
+                    else
+                    {
+                        // compare(string, value)
+                        ytype = cg.EmitConvertToPhpValue(ytype, 0);
+                        cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_string_value);
+                    }
+
+                    // <> 0
+                    il.EmitOpCode(ILOpCode.Ldc_i4_0, 1);
+                    il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
+                    return cg.CoreTypes.Boolean;
 
                 case SpecialType.System_Boolean:
-                    throw new NotImplementedException($"compare(bool, ...)");
+
+                    cg.EmitConvert(right, cg.CoreTypes.Boolean);
+                    ytype = cg.CoreTypes.Boolean;
+
+                    // compare(bool, bool)
+                    cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_bool_bool);
+
+                    // <> 0
+                    il.EmitOpCode(ILOpCode.Ldc_i4_0, 1);
+                    il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
+                    return cg.CoreTypes.Boolean;
 
                 default:
                     if (xtype == cg.CoreTypes.PhpNumber)
@@ -651,8 +953,7 @@ namespace Pchp.CodeAnalysis.Semantics
                                 : cg.CoreMethods.PhpNumber.gt_number_long)
                                 .Expect(SpecialType.System_Boolean);
                         }
-
-                        if (ytype.SpecialType == SpecialType.System_Double)
+                        else if (ytype.SpecialType == SpecialType.System_Double)
                         {
                             // number <> r8
                             return cg.EmitCall(ILOpCode.Call, lt
@@ -660,8 +961,7 @@ namespace Pchp.CodeAnalysis.Semantics
                                 : cg.CoreMethods.PhpNumber.gt_number_double)
                                 .Expect(SpecialType.System_Boolean);
                         }
-
-                        if (ytype == cg.CoreTypes.PhpNumber)
+                        else if (ytype == cg.CoreTypes.PhpNumber)
                         {
                             // number <> number
                             return cg.EmitCall(ILOpCode.Call, lt
@@ -669,39 +969,39 @@ namespace Pchp.CodeAnalysis.Semantics
                                 : cg.CoreMethods.PhpNumber.gt_number_number)
                                 .Expect(SpecialType.System_Boolean);
                         }
-                        //else
-                        //{
-                        //    // Operator.Compare(x, y) : int
-                        //}
-
-                        //// lt <=> comparison < 0
-                        //// gt <=> comparison > 0
-                        //il.EmitOpCode(ILOpCode.Ldc_i4_0, 1);    // +1 on stack
-                        //il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
-                        //break;
-
-                        throw new NotImplementedException($"compare(PhpNumber, {ytype.Name})");
-                    }
-                    else if (xtype == cg.CoreTypes.PhpValue)
-                    {
-                        ytype = cg.Emit(right);
-                        switch (ytype.SpecialType)
+                        else
                         {
-                            default:
-                                ytype = cg.EmitConvertToPhpValue(ytype, right.TypeRefMask);
-                                // Compare(value, value) <> 0
-                                cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_value_value);
-                                il.EmitOpCode(ILOpCode.Ldc_i4_0, 1);
-                                il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
-                                return cg.CoreTypes.Boolean;
+                            ytype = cg.EmitConvertToPhpValue(ytype, 0);
+
+                            // compare(number, value)
+                            cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_number_value);
+
+                            // <> 0
+                            il.EmitOpCode(ILOpCode.Ldc_i4_0, 1);    // +1 on stack
+                            il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
+                            return cg.CoreTypes.Boolean;
                         }
                     }
+                    else
+                    {
+                        xtype = cg.EmitConvertToPhpValue(xtype, 0);
+                        ytype = cg.Emit(right);
 
-                    throw new NotImplementedException($"compare({xtype.Name}, ...)");
+                        // TODO: if (ytype.SpecialType == SpecialType.System_Boolean) ...
+                        // TODO: if (ytype.SpecialType == SpecialType.System_Int64) ...
+                        // TODO: if (ytype.SpecialType == SpecialType.System_String) ...
+                        // TODO: if (ytype.SpecialType == SpecialType.System_Double) ...
+
+                        // compare(value, value)
+                        ytype = cg.EmitConvertToPhpValue(ytype, right.TypeRefMask);
+                        cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.Compare_value_value);
+
+                        // <> 0
+                        il.EmitOpCode(ILOpCode.Ldc_i4_0, 1);
+                        il.EmitOpCode(lt ? ILOpCode.Clt : ILOpCode.Cgt);
+                        return cg.CoreTypes.Boolean;
+                    }
             }
-
-            // always bool
-            return cg.CoreTypes.Boolean;
         }
 
         /// <summary>
@@ -1119,10 +1419,19 @@ namespace Pchp.CodeAnalysis.Semantics
 
                 case Operations.UnsetCast:
                     // Template: "(unset)x"  null
-                    //il.Emit(OpCodes.Ldnull);
-                    //returned_typecode = PhpTypeCode.Object;
-                    //break;
-                    throw new NotImplementedException();
+
+                    cg.EmitPop(cg.Emit(this.Operand));
+
+                    if (this.Access.IsRead)
+                    {
+                        cg.Builder.EmitNullConstant();
+                        returned_type = cg.CoreTypes.Object;
+                    }
+                    else
+                    {
+                        returned_type = cg.CoreTypes.Void;
+                    }
+                    break;
 
                 default:
                     throw ExceptionUtilities.Unreachable;
@@ -1224,49 +1533,7 @@ namespace Pchp.CodeAnalysis.Semantics
             // push value onto the evaluation stack
 
             Debug.Assert(ConstantValue.HasValue);
-            var value = ConstantValue.Value;
-            if (value == null)
-            {
-                if (this.Access.TargetType == cg.CoreTypes.PhpValue)
-                {
-                    return cg.Emit_PhpValue_Null();
-                }
-
-                cg.Builder.EmitNullConstant();
-                return cg.CoreTypes.Object;
-            }
-            else
-            {
-                if (value is int)
-                {
-                    cg.Builder.EmitIntConstant((int)value);
-                    return cg.CoreTypes.Int32;
-                }
-                else if (value is long)
-                {
-                    cg.Builder.EmitLongConstant((long)value);
-                    return cg.CoreTypes.Long;
-                }
-                else if (value is string)
-                {
-                    cg.Builder.EmitStringConstant((string)value);
-                    return cg.CoreTypes.String;
-                }
-                else if (value is bool)
-                {
-                    cg.Builder.EmitBoolConstant((bool)value);
-                    return cg.CoreTypes.Boolean;
-                }
-                else if (value is double)
-                {
-                    cg.Builder.EmitDoubleConstant((double)value);
-                    return cg.CoreTypes.Double;
-                }
-                else
-                {
-                    throw new NotImplementedException();
-                }
-            }
+            return cg.EmitLoadConstant(ConstantValue.Value, this.Access.TargetType);
         }
     }
 
@@ -1300,6 +1567,16 @@ namespace Pchp.CodeAnalysis.Semantics
         internal override IBoundReference BindPlace(CodeGenerator cg) => this.Variable.BindPlace(cg.Builder, this.Access, this.TypeRefMask);
 
         internal override IPlace Place(ILBuilder il) => this.Variable.Place(il);
+    }
+
+    partial class BoundListEx
+    {
+        internal override IBoundReference BindPlace(CodeGenerator cg)
+        {
+            throw new NotImplementedException();
+        }
+
+        internal override IPlace Place(ILBuilder il) => null;
     }
 
     partial class BoundFieldRef : IBoundReference
@@ -1622,7 +1899,7 @@ namespace Pchp.CodeAnalysis.Semantics
                 // Target()
                 var functype = cg.Factory.GetCallSiteDelegateType(
                     this.Instance.ResultType, RefKind.None,
-                    ImmutableArray.Create(valueType),
+                    (valueType != null) ? ImmutableArray.Create(valueType) : ImmutableArray<TypeSymbol>.Empty,
                     default(ImmutableArray<RefKind>),
                     null,
                     cg.CoreTypes.Void);
@@ -1671,6 +1948,31 @@ namespace Pchp.CodeAnalysis.Semantics
                         cg.EmitConvert(valueType, 0, type);
                         EmitOpCode_Store(cg);
                     }
+                }
+                else if (Access.IsUnset)
+                {
+                    Debug.Assert(valueType == null);
+
+                    // <place> =
+
+                    if (type == cg.CoreTypes.PhpAlias)
+                    {
+                        // new PhpAlias(void)
+                        cg.Emit_PhpValue_Void();
+                        cg.Emit_PhpValue_MakeAlias();
+                    }
+                    else if (type.IsReferenceType)
+                    {
+                        // null
+                        cg.Builder.EmitNullConstant();
+                    }
+                    else
+                    {
+                        // default(T)
+                        cg.EmitLoadDefaultOfValueType(type);
+                    }
+
+                    EmitOpCode_Store(cg);
                 }
                 else
                 {
@@ -1734,7 +2036,7 @@ namespace Pchp.CodeAnalysis.Semantics
             {
                 // callsite
 
-                var callsite = cg.Factory.StartCallSite($"call_{this.Name.ClrName()}");
+                var callsite = cg.Factory.StartCallSite("call_" + this.Name.ClrName());
 
                 var callsiteargs = new List<TypeSymbol>(arguments.Length);
                 var return_type = this.Access.IsRead
@@ -1906,8 +2208,6 @@ namespace Pchp.CodeAnalysis.Semantics
     {
         internal override TypeSymbol Emit(CodeGenerator cg)
         {
-            var phpstring = cg.CoreTypes.PhpString;
-
             // new PhpString(capacity)
             cg.Emit_New_PhpString(CapacityHint());
 
@@ -1923,12 +2223,12 @@ namespace Pchp.CodeAnalysis.Semantics
 
                 // TODO: Add overloads for specific types, not System.String only
                 cg.EmitConvert(expr, cg.CoreTypes.String);
-                cg.EmitCall(ILOpCode.Call, cg.CoreMethods.PhpString.Append_String);
+                cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.PhpString.Append_String);
                 cg.Builder.EmitOpCode(ILOpCode.Nop);
             }
 
             //
-            return phpstring;
+            return cg.CoreTypes.PhpString;
         }
 
         bool IsEmpty(BoundExpression x)
@@ -2101,6 +2401,39 @@ namespace Pchp.CodeAnalysis.Semantics
         }
     }
 
+    partial class BoundExitEx
+    {
+        internal override TypeSymbol Emit(CodeGenerator cg)
+        {
+            // LOAD <ctx>
+            cg.EmitLoadContext();
+
+            if (_arguments.Length == 0)
+            {
+                // <ctx>.Exit();
+                return cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.Context.Exit);
+            }
+
+            // LOAD <status>
+            var t = cg.Emit(_arguments[0].Value);
+
+            switch (t.SpecialType)
+            {
+                case SpecialType.System_Int32:
+                    cg.Builder.EmitOpCode(ILOpCode.Conv_i8);    // i4 -> i8
+                    goto case SpecialType.System_Int64;
+
+                case SpecialType.System_Int64:
+                    return cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.Context.Exit_Long);
+
+                default:
+
+                    cg.EmitConvertToPhpValue(t, 0);
+                    return cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.Context.Exit_PhpValue);
+            }
+        }
+    }
+
     partial class BoundAssignEx
     {
         internal override TypeSymbol Emit(CodeGenerator cg)
@@ -2167,7 +2500,7 @@ namespace Pchp.CodeAnalysis.Semantics
         {
             Debug.Assert(Access.IsRead || Access.IsNone);
 
-            // target = target X value;
+            // target X= value;
 
             var target_place = this.Target.BindPlace(cg);
             Debug.Assert(target_place != null);
@@ -2195,9 +2528,9 @@ namespace Pchp.CodeAnalysis.Semantics
                 //case Operations.AssignAnd:
                 //    binaryop = Operations.And;
                 //    break;
-                //case Operations.AssignAppend:
-                //    binaryop = Operations.Concat;
-                //    break;
+                case Operations.AssignAppend:
+                    result_type = EmitAppend(cg, xtype, Value);
+                    break;
                 ////case Operations.AssignPrepend:
                 ////    break;
                 case Operations.AssignDiv:
@@ -2239,7 +2572,6 @@ namespace Pchp.CodeAnalysis.Semantics
                     tmp = cg.GetTemporaryLocal(result_type, false);
                     cg.Builder.EmitOpCode(ILOpCode.Dup);
                     cg.Builder.EmitLocalStore(tmp);
-                    cg.ReturnTemporaryLocal(tmp);
                     break;
                 case AccessMask.None:
                     break;
@@ -2255,9 +2587,35 @@ namespace Pchp.CodeAnalysis.Semantics
                 case AccessMask.None:
                     return cg.CoreTypes.Void;
                 case AccessMask.Read:
+                    Debug.Assert(tmp != null);
+                    cg.Builder.EmitLoad(tmp);
+                    cg.ReturnTemporaryLocal(tmp);
                     return result_type;
                 default:
                     throw ExceptionUtilities.UnexpectedValue(this.Access);
+            }
+        }
+
+        static TypeSymbol EmitAppend(CodeGenerator cg, TypeSymbol xtype, BoundExpression y)
+        {
+            if (xtype == cg.CoreTypes.PhpString)
+            {
+                // x.Append(y); return x;
+                cg.Builder.EmitOpCode(ILOpCode.Dup);
+
+                cg.EmitConvert(y, cg.CoreTypes.String);
+                cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.PhpString.Append_String);
+
+                //
+                return xtype;
+            }
+            else
+            {
+                // concat(x, y)
+                cg.EmitConvert(xtype, 0, cg.CoreTypes.String);
+                cg.EmitConvert(y, cg.CoreTypes.String);
+
+                return cg.EmitCall(ILOpCode.Newobj, cg.CoreMethods.Ctors.PhpString_string_string);
             }
         }
     }
@@ -2368,7 +2726,7 @@ namespace Pchp.CodeAnalysis.Semantics
                 object endLbl = new object();
 
                 // Cond ? True : False
-                cg.EmitConvertToBool(this.Condition);   // i4
+                cg.EmitConvert(this.Condition, cg.CoreTypes.Boolean);   // i4
                 cg.Builder.EmitBranch(ILOpCode.Brtrue, trueLbl);
 
                 // false:
@@ -2583,6 +2941,14 @@ namespace Pchp.CodeAnalysis.Semantics
                     cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.PhpArray.AddValue_PhpValue);
                 }
             }
+            else if (Access.IsUnset)
+            {
+                if (this.Index == null)
+                    throw new InvalidOperationException();
+
+                // .RemoveKey(key)
+                cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.PhpArray.RemoveKey_IntStringKey);
+            }
             else
             {
                 Debug.Assert(Access.IsWrite);
@@ -2664,6 +3030,97 @@ namespace Pchp.CodeAnalysis.Semantics
             }
 
             throw new NotImplementedException();
+        }
+    }
+
+    partial class BoundPseudoConst
+    {
+        internal override TypeSymbol Emit(CodeGenerator cg)
+        {
+            switch (this.Type)
+            {
+                case PseudoConstUse.Types.File:
+
+                    // <ctx>.FilePath<TScript>()
+                    cg.EmitLoadContext();
+                    return cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.Context.ScriptPath_TScript.Symbol.Construct(cg.Routine.ContainingFile))
+                        .Expect(SpecialType.System_String);
+
+                default:
+                    throw new NotImplementedException(Type.ToString());
+            }
+        }
+    }
+
+    partial class BoundGlobalConst
+    {
+        internal override TypeSymbol Emit(CodeGenerator cg)
+        {
+            if (this.ConstantValue.HasValue)
+            {
+                return cg.EmitLoadConstant(this.ConstantValue.Value, this.Access.TargetType);
+            }
+
+            var idxfield = ((IWithSynthesized)cg.Module.ScriptType)
+                .GetOrCreateSynthesizedField(cg.CoreTypes.Int32, $"c<{this.Name}>idx", Accessibility.Internal, true);
+
+            // <ctx>.GetConstant(<name>, ref <Index of constant>)
+            cg.EmitLoadContext();
+            cg.Builder.EmitStringConstant(this.Name);
+            cg.EmitFieldAddress(idxfield);
+            return cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.Context.GetConstant_string_int32)
+                .Expect(cg.CoreTypes.PhpValue);
+        }
+    }
+
+    partial class BoundIsSetEx
+    {
+        internal override TypeSymbol Emit(CodeGenerator cg)
+        {
+            var end_label = new object();
+
+            var vars = this.VarReferences;
+            for (int i = 0; i < vars.Length; i++)
+            {
+                if (i > 0)
+                {
+                    cg.Builder.EmitOpCode(ILOpCode.Pop);
+                }
+
+                var t = cg.Emit(vars[i]);
+
+                // t.IsSet
+                if (t == cg.CoreTypes.PhpValue)
+                {
+                    // IsSet(value)
+                    cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.IsSet_PhpValue);
+                }
+                else if (t.IsReferenceType)
+                {
+                    // object != null
+                    cg.Builder.EmitNullConstant(); // .ldnull
+                    cg.Builder.EmitOpCode(ILOpCode.Cgt_un); // .cgt.un
+                }
+                else
+                {
+                    // value type => true
+                    cg.EmitPop(t);
+                    cg.Builder.EmitBoolConstant(true);
+                }
+
+                if (i + 1 < vars.Length)
+                {
+                    // if (result == false) goto end_label;
+                    cg.Builder.EmitOpCode(ILOpCode.Dup);
+                    cg.Builder.EmitBranch(ILOpCode.Brfalse, end_label);
+                }
+            }
+
+            //
+            cg.Builder.MarkLabel(end_label);
+
+            //
+            return cg.CoreTypes.Boolean;
         }
     }
 }

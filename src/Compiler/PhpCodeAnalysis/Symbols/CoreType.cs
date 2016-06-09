@@ -92,8 +92,9 @@ namespace Pchp.CodeAnalysis.Symbols
         public const string PhpExtensionAttributeName = "Pchp.Core.PhpExtensionAttribute";
 
         public readonly CoreType
-            Context, Operators, Convert, Comparison,
-            ScriptAttribute,
+            Context, Operators, Convert, Comparison, StrictComparison,
+            ScriptAttribute, ScriptDiedException,
+            IStaticInit,
             CallMethodBinder, CallFunctionBinder, GetFieldBinder, SetFieldBinder, AccessFlags,
             PhpNumber, PhpValue, PhpAlias, PhpString, PhpArray,
             IntStringKey,
@@ -123,11 +124,14 @@ namespace Pchp.CodeAnalysis.Symbols
             PhpString = Create("PhpString");
             PhpArray = Create("PhpArray");
             IntStringKey = Create("IntStringKey");
+            ScriptDiedException = Create("ScriptDiedException");
             Context = Create("Context");
             Operators = Create("Operators");
             Comparison = Create("Comparison");
+            StrictComparison = Create("StrictComparison");
             Convert = Create("Convert");
             ScriptAttribute = Create("ScriptAttribute");
+            IStaticInit = Create("IStaticInit");
             stdClass = CreateFromFullName("stdClass");
 
             CallMethodBinder = Create("Dynamic.CallMethodBinder");

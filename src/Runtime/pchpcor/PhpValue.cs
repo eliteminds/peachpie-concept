@@ -53,6 +53,8 @@ namespace Pchp.Core
             public PhpArray Array;
             [FieldOffset(0)]
             public PhpAlias Alias;
+
+            public override int GetHashCode() => (Obj != null) ? Obj.GetHashCode() : 0;
         }
 
         #endregion
@@ -68,7 +70,7 @@ namespace Pchp.Core
         /// A reference type container.
         /// </summary>
         ObjectField _obj;
-        
+
         /// <summary>
         /// A value type container.
         /// </summary>
@@ -86,7 +88,7 @@ namespace Pchp.Core
         /// <summary>
         /// Gets value indicating whether the value is set.
         /// </summary>
-        public bool IsSet => (TypeCode != PhpTypeCode.Undefined);
+        public bool IsSet => (_type != null && TypeCode != PhpTypeCode.Undefined);
 
         /// <summary>
         /// Gets value indicating whether the value is an alias containing another value.
@@ -175,6 +177,42 @@ namespace Pchp.Core
 
         #region Operators
 
+        public static bool operator ==(PhpValue left, PhpValue right) => left.Compare(right) == 0;
+
+        public static bool operator !=(PhpValue left, PhpValue right) => left.Compare(right) != 0;
+
+        public static bool operator <(PhpValue left, PhpValue right) => left.Compare(right) < 0;
+
+        public static bool operator >(PhpValue left, PhpValue right) => left.Compare(right) > 0;
+
+        public override bool Equals(object obj) => Equals((obj is PhpValue) ? (PhpValue)obj : FromClr(obj));
+
+        public override int GetHashCode() => _obj.GetHashCode() ^ (int)_value.Long;
+
+        public IntStringKey ToIntStringKey() => _type.ToIntStringKey(ref this);
+
+        /// <summary>
+        /// Gets enumerator object used within foreach statement.
+        /// </summary>
+        public IPhpEnumerator GetForeachEnumerator(bool aliasedValues, RuntimeTypeHandle caller) => _type.GetForeachEnumerator(ref this, aliasedValues, caller);
+
+        /// <summary>
+        /// Compares two value operands.
+        /// </summary>
+        /// <param name="right">The right operand.</param>
+        /// <returns>Comparison result.
+        /// Zero for equality,
+        /// negative value for <c>this</c> &lt; <paramref name="right"/>,
+        /// position value for <c>this</c> &gt; <paramref name="right"/>.</returns>
+        public int Compare(PhpValue right) => _type.Compare(ref this, right);
+
+        /// <summary>
+        /// Performs strict comparison.
+        /// </summary>
+        /// <param name="right">The right operand.</param>
+        /// <returns>The value determining operands are strictly equal.</returns>
+        public bool StrictEquals(PhpValue right) => _type.StrictEquals(ref this, right);
+
         /// <summary>
         /// Gets underlaying class instance or <c>null</c>.
         /// </summary>
@@ -187,6 +225,12 @@ namespace Pchp.Core
         public PhpArray EnsureArray() => _type.EnsureArray(ref this);
 
         public PhpAlias EnsureAlias() => _type.EnsureAlias(ref this);
+
+        /// <summary>
+        /// Dereferences in case of an alias.
+        /// </summary>
+        /// <returns>Not aliased value.</returns>
+        public PhpValue GetValue() => IsAlias ? Alias.Value : this;
 
         /// <summary>
         /// Creates a deep copy of PHP value.
@@ -222,10 +266,7 @@ namespace Pchp.Core
 
         #region IEquatable<PhpValue>
 
-        public bool Equals(PhpValue other)
-        {
-            return _type == other._type && _obj.Obj == other._obj.Obj && _value.Long == other._value.Long;
-        }
+        public bool Equals(PhpValue other) => this.Compare(other) == 0;
 
         #endregion
 
@@ -292,6 +333,8 @@ namespace Pchp.Core
 
         public static PhpValue Create(PhpAlias value) => new PhpValue(TypeTable.AliasTable, value);
 
+        public static PhpValue Create(IntStringKey value) => value.IsInteger ? Create(value.Integer) : Create(value.String);
+
         public static PhpValue FromClass(object value)
         {
             Debug.Assert(!(value is int || value is long || value is bool || value is string || value is double || value is PhpAlias || value is PhpString || value is PhpArray));
@@ -315,7 +358,7 @@ namespace Pchp.Core
                 if (value.GetType() == typeof(PhpAlias)) return Create((PhpAlias)value);
                 if (value.GetType() == typeof(PhpArray)) return Create((PhpArray)value);
                 if (value.GetType() == typeof(PhpValue)) return (PhpValue)value;
-                
+
                 //                
                 return FromClass(value);
             }

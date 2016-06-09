@@ -274,6 +274,7 @@ namespace Pchp.CodeAnalysis.Symbols
                 SetValue_PhpValueRef_PhpValue = ct.Operators.Method("SetValue", ct.PhpValue, ct.PhpValue);
                 EnsureObject_ObjectRef = ct.Operators.Method("EnsureObject", ct.Object);
                 EnsureArray_PhpArrayRef = ct.Operators.Method("EnsureArray", ct.PhpArray);
+                IsSet_PhpValue = ct.Operators.Method("IsSet", ct.PhpValue);
 
                 ToString_Bool = ct.Convert.Method("ToString", ct.Boolean);
                 ToString_Int32 = ct.Convert.Method("ToString", ct.Int32);
@@ -287,6 +288,7 @@ namespace Pchp.CodeAnalysis.Symbols
                 AsObject_PhpValue = ct.Convert.Method("AsObject", ct.PhpValue);
                 AsArray_PhpValue = ct.Convert.Method("AsArray", ct.PhpValue);
                 ToClass_PhpValue = ct.Convert.Method("ToClass", ct.PhpValue);
+                ToIntStringKey_PhpValue = ct.Convert.Method("ToIntStringKey", ct.PhpValue);
 
                 Echo_String = ct.Context.Method("Echo", ct.String);
                 Echo_PhpString = ct.Context.Method("Echo", ct.PhpString);
@@ -297,19 +299,53 @@ namespace Pchp.CodeAnalysis.Symbols
                 Echo_Long = ct.Context.Method("Echo", ct.Long);
                 Echo_Int32 = ct.Context.Method("Echo", ct.Int32);
 
+                GetForeachEnumerator_PhpValue_Bool_RuntimeTypeHandle = ct.Operators.Method("GetForeachEnumerator", ct.PhpValue, ct.Boolean, ct.RuntimeTypeHandle);
+
+                Ceq_long_double = ct.Comparison.Method("Ceq", ct.Long, ct.Double);
+                Ceq_long_bool = ct.Comparison.Method("Ceq", ct.Long, ct.Boolean);
+                Ceq_long_string = ct.Comparison.Method("Ceq", ct.Long, ct.String);
+                Ceq_double_string = ct.Comparison.Method("Ceq", ct.Double, ct.String);
+                Ceq_string_long = ct.Comparison.Method("Ceq", ct.String, ct.Long);
+                Ceq_string_double = ct.Comparison.Method("Ceq", ct.String, ct.Double);
+                Ceq_string_bool = ct.Comparison.Method("Ceq", ct.String, ct.Boolean);
                 Clt_long_double = ct.Comparison.Method("Clt", ct.Long, ct.Double);
                 Cgt_long_double = ct.Comparison.Method("Cgt", ct.Long, ct.Double);
+                Compare_bool_bool = ct.Comparison.Method("Compare", ct.Boolean, ct.Boolean);
+                Compare_number_value = ct.Comparison.Method("Compare", ct.PhpNumber, ct.PhpValue);
+                Compare_long_value = ct.Comparison.Method("Compare", ct.Long, ct.PhpValue);
+                Compare_double_value = ct.Comparison.Method("Compare", ct.Double, ct.PhpValue);
+                Compare_bool_value = ct.Comparison.Method("Compare", ct.Boolean, ct.PhpValue);
                 Compare_value_value = ct.Comparison.Method("Compare", ct.PhpValue, ct.PhpValue);
+                Compare_string_string = ct.Comparison.Method("Compare", ct.String, ct.String);
+                Compare_string_long = ct.Comparison.Method("Compare", ct.String, ct.Long);
+                Compare_string_double = ct.Comparison.Method("Compare", ct.String, ct.Double);
+                Compare_string_value = ct.Comparison.Method("Compare", ct.String, ct.PhpValue);
+
+                StrictCeq_bool_PhpValue = ct.StrictComparison.Method("Ceq", ct.Boolean, ct.PhpValue);
+                StrictCeq_long_PhpValue = ct.StrictComparison.Method("Ceq", ct.Long, ct.PhpValue);
+                StrictCeq_double_PhpValue = ct.StrictComparison.Method("Ceq", ct.Double, ct.PhpValue);
+                StrictCeq_PhpValue_PhpValue = ct.StrictComparison.Method("Ceq", ct.PhpValue, ct.PhpValue);
+                StrictCeq_PhpValue_bool = ct.StrictComparison.Method("Ceq", ct.PhpValue, ct.Boolean);
             }
 
             public readonly CoreMethod
                 SetValue_PhpValueRef_PhpValue, EnsureObject_ObjectRef, EnsureArray_PhpArrayRef,
+                IsSet_PhpValue,
                 ToString_Bool, ToString_Long, ToString_Int32, ToString_Double_Context, Long_ToString,
                 ToBoolean_String, ToBoolean_PhpValue, ToBoolean_Object,
                 AsObject_PhpValue, AsArray_PhpValue, ToClass_PhpValue,
+                ToIntStringKey_PhpValue,
                 Echo_Object, Echo_String, Echo_PhpString, Echo_PhpNumber, Echo_PhpValue, Echo_Double, Echo_Long, Echo_Int32,
 
-                Clt_long_double, Cgt_long_double, Compare_value_value;
+                GetForeachEnumerator_PhpValue_Bool_RuntimeTypeHandle,
+
+                Ceq_long_double, Ceq_long_bool, Ceq_long_string, Ceq_double_string, Ceq_string_long, Ceq_string_double, Ceq_string_bool,
+                Clt_long_double, Cgt_long_double,
+                Compare_bool_bool, Compare_number_value,
+                Compare_long_value, Compare_value_value, Compare_double_value, Compare_bool_value, Compare_string_string, Compare_string_long, Compare_string_double, Compare_string_value,
+                
+                StrictCeq_bool_PhpValue, StrictCeq_long_PhpValue, StrictCeq_double_PhpValue, StrictCeq_PhpValue_PhpValue,
+                StrictCeq_PhpValue_bool;
         }
 
         public struct PhpValueHolder
@@ -324,6 +360,8 @@ namespace Pchp.CodeAnalysis.Symbols
                 EnsureObject = ct.PhpValue.Method("EnsureObject");
                 EnsureArray = ct.PhpValue.Method("EnsureArray");
                 EnsureAlias = ct.PhpValue.Method("EnsureAlias");
+
+                Eq_PhpValue_PhpValue = ct.PhpValue.Operator(WellKnownMemberNames.EqualityOperatorName, ct.PhpValue, ct.PhpValue);
 
                 DeepCopy = ct.PhpValue.Method("DeepCopy");
                 AsArray = ct.PhpValue.Method("AsArray");
@@ -340,10 +378,12 @@ namespace Pchp.CodeAnalysis.Symbols
                 Create_Long = ct.PhpValue.Method("Create", ct.Long);
                 Create_Double = ct.PhpValue.Method("Create", ct.Double);
                 Create_String = ct.PhpValue.Method("Create", ct.String);
+                Create_PhpString = ct.PhpValue.Method("Create", ct.PhpString);
                 Create_PhpNumber = ct.PhpValue.Method("Create", ct.PhpNumber);
                 Create_PhpArray = ct.PhpValue.Method("Create", ct.PhpArray);
                 Create_PhpAlias = ct.PhpValue.Method("Create", ct.PhpAlias);
-                
+                Create_IntStringKey = ct.PhpValue.Method("Create", ct.IntStringKey);
+
                 FromClr_Object = ct.PhpValue.Method("FromClr", ct.Object);
                 FromClass_Object = ct.PhpValue.Method("FromClass", ct.Object);
 
@@ -355,8 +395,9 @@ namespace Pchp.CodeAnalysis.Symbols
                 ToLong, ToDouble, ToBoolean, ToString_Context, ToClass, EnsureObject, EnsureArray, EnsureAlias,
                 AsArray, AsObject,
                 DeepCopy,
+                Eq_PhpValue_PhpValue,
                 get_Long, get_Double, get_Boolean, get_String, get_Object, get_Array,
-                Create_Boolean, Create_Long, Create_Double, Create_String, Create_PhpNumber, Create_PhpAlias, Create_PhpArray,
+                Create_Boolean, Create_Long, Create_Double, Create_String, Create_PhpString, Create_PhpNumber, Create_PhpAlias, Create_PhpArray, Create_IntStringKey,
                 FromClr_Object, FromClass_Object;
 
             public readonly CoreField
@@ -533,9 +574,12 @@ namespace Pchp.CodeAnalysis.Symbols
                 ToClass = ct.PhpArray.Method("ToClass");
                 ToBoolean = ct.PhpArray.Method("ToBoolean");
 
+                RemoveKey_IntStringKey = ct.PhpArray.Method("RemoveKey", ct.IntStringKey);
+
                 GetItemValue_IntStringKey = ct.PhpArray.Method("GetItemValue", ct.IntStringKey);
 
                 DeepCopy = ct.PhpArray.Method("DeepCopy");
+                GetForeachEnumerator_Boolean = ct.PhpArray.Method("GetForeachEnumerator", ct.Boolean);
 
                 SetItemValue_IntStringKey_PhpValue = ct.PhpArray.Method("SetItemValue", ct.IntStringKey, ct.PhpValue);
                 SetItemAlias_IntStringKey_PhpAlias = ct.PhpArray.Method("SetItemAlias", ct.IntStringKey, ct.PhpAlias);
@@ -548,10 +592,11 @@ namespace Pchp.CodeAnalysis.Symbols
 
             public readonly CoreMethod
                 ToClass, ToString_Context, ToBoolean,
+                RemoveKey_IntStringKey,
                 GetItemValue_IntStringKey,
                 SetItemValue_IntStringKey_PhpValue, SetItemAlias_IntStringKey_PhpAlias, AddValue_PhpValue,
                 EnsureItemObject_IntStringKey, EnsureItemArray_IntStringKey, EnsureItemAlias_IntStringKey,
-                DeepCopy;
+                DeepCopy, GetForeachEnumerator_Boolean;
         }
 
         public struct ConstructorsHolder
@@ -560,6 +605,7 @@ namespace Pchp.CodeAnalysis.Symbols
             {
                 PhpAlias_PhpValue_int = ct.PhpAlias.Ctor(ct.PhpValue, ct.Int32);
                 PhpString_int = ct.PhpString.Ctor(ct.Int32);
+                PhpString_string_string = ct.PhpString.Ctor(ct.String, ct.String);
                 PhpArray = ct.PhpArray.Ctor();
                 PhpArray_int = ct.PhpArray.Ctor(ct.Int32);
                 IntStringKey_int = ct.IntStringKey.Ctor(ct.Int32);
@@ -570,7 +616,7 @@ namespace Pchp.CodeAnalysis.Symbols
             public readonly CoreConstructor
                 PhpAlias_PhpValue_int,
                 PhpArray, PhpArray_int,
-                PhpString_int,
+                PhpString_int, PhpString_string_string,
                 IntStringKey_int, IntStringKey_string,
                 ScriptAttribute_string;
         }
@@ -593,6 +639,16 @@ namespace Pchp.CodeAnalysis.Symbols
                 OnInclude_TScript = ct.Context.Method("OnInclude");
                 Include_string_string_PhpArray_object_bool_bool = ct.Context.Method("Include", ct.String, ct.String, ct.PhpArray, ct.Object, ct.Boolean, ct.Boolean);
 
+                ScriptPath_TScript = ct.Context.Method("ScriptPath");
+
+                GetConstant_string_int32 = ct.Context.Method("GetConstant", ct.String, ct.Int32);
+
+                GetStatic_T = ct.Context.Method("GetStatic");
+
+                Exit_PhpValue = ct.Context.Method("Exit", ct.PhpValue);
+                Exit_Long = ct.Context.Method("Exit", ct.Long);
+                Exit = ct.Context.Method("Exit");
+
                 get_Globals = ct.Context.Method("get_Globals");   // TODO: special name, property
             }
 
@@ -602,6 +658,10 @@ namespace Pchp.CodeAnalysis.Symbols
                 DeclareFunction_intRef_string_method, DeclareType_T_string,
                 DisableErrorReporting, EnableErrorReporting,
                 CheckIncludeOnce_TScript, OnInclude_TScript, Include_string_string_PhpArray_object_bool_bool,
+                ScriptPath_TScript,
+                GetConstant_string_int32,
+                GetStatic_T,
+                Exit_PhpValue, Exit_Long, Exit,
                 Dispose;
 
             public readonly CoreMethod

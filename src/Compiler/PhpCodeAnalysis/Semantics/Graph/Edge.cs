@@ -114,6 +114,18 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
     }
 
     /// <summary>
+    /// Represents an edge leaving try/catch block.
+    /// The edge is not emitted.
+    /// </summary>
+    public partial class LeaveEdge : SimpleEdge
+    {
+        internal LeaveEdge(BoundBlock source, BoundBlock target)
+            :base(source, target)
+        {
+        }
+    }
+
+    /// <summary>
     /// Conditional edge.
     /// </summary>
     [DebuggerDisplay("ConditionalEdge")]
@@ -259,12 +271,14 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
         /// </summary>
         public BoundExpression Enumeree => _enumeree;
         private readonly BoundExpression _enumeree;
+        readonly bool _aliasedValues;
 
-        internal ForeachEnumereeEdge(BoundBlock/*!*/source, BoundBlock/*!*/target, BoundExpression/*!*/enumeree)
+        internal ForeachEnumereeEdge(BoundBlock/*!*/source, BoundBlock/*!*/target, BoundExpression/*!*/enumeree, bool aliasedValues)
             : base(source, target)
         {
             Contract.ThrowIfNull(enumeree);
             _enumeree = enumeree;
+            _aliasedValues = aliasedValues;
         }
 
         /// <summary>
@@ -300,16 +314,16 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
         /// <summary>
         /// Variable to store key in (can be null).
         /// </summary>
-        public ForeachVar KeyVariable { get { return _keyVariable; } }
-        readonly ForeachVar _keyVariable;
+        public BoundReferenceExpression KeyVariable { get { return _keyVariable; } }
+        readonly BoundReferenceExpression _keyVariable;
 
         /// <summary>
         /// Variable to store value in
         /// </summary>
-        public ForeachVar ValueVariable { get { return _valueVariable; } }
-        readonly ForeachVar _valueVariable;
+        public BoundReferenceExpression ValueVariable { get { return _valueVariable; } }
+        readonly BoundReferenceExpression _valueVariable;
 
-        internal ForeachMoveNextEdge(BoundBlock/*!*/source, BoundBlock/*!*/body, BoundBlock/*!*/end, ForeachEnumereeEdge/*!*/enumereeEdge, ForeachVar keyVar, ForeachVar/*!*/valueVar)
+        internal ForeachMoveNextEdge(BoundBlock/*!*/source, BoundBlock/*!*/body, BoundBlock/*!*/end, ForeachEnumereeEdge/*!*/enumereeEdge, BoundReferenceExpression keyVar, BoundReferenceExpression/*!*/valueVar)
             : base(source)
         {
             Contract.ThrowIfNull(body);

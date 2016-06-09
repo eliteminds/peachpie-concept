@@ -1,4 +1,8 @@
-﻿using Pchp.CodeAnalysis.CodeGen;
+﻿using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CodeGen;
+using Pchp.CodeAnalysis.CodeGen;
+using Pchp.CodeAnalysis.Symbols;
+using Pchp.Syntax.AST;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -29,6 +33,14 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
                 cg.Builder.EmitOpCode(ILOpCode.Nop);
             }
             cg.Scope.ContinueWith(NextBlock);
+        }
+    }
+
+    partial class LeaveEdge
+    {
+        internal override void Generate(CodeGenerator cg)
+        {
+            // nop
         }
     }
 
@@ -72,15 +84,325 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
     {
         internal override void Generate(CodeGenerator cg)
         {
-            throw new NotImplementedException();
+            EmitTryStatement(cg);
+        }
+
+        void EmitTryStatement(CodeGenerator cg, bool emitCatchesOnly = false)
+        {
+            // Stack must be empty at beginning of try block.
+            cg.Builder.AssertStackEmpty();
+
+            // IL requires catches and finally block to be distinct try
+            // blocks so if the source contained both a catch and
+            // a finally, nested scopes are emitted.
+            bool emitNestedScopes = (!emitCatchesOnly &&
+                //(_catchBlocks.Length != 0) &&
+                (_finallyBlock != null));
+
+            cg.Builder.OpenLocalScope(ScopeType.TryCatchFinally);
+
+            cg.Builder.OpenLocalScope(ScopeType.Try);
+            // IL requires catches and finally block to be distinct try
+            // blocks so if the source contained both a catch and
+            // a finally, nested scopes are emitted.
+
+            //_tryNestingLevel++;
+            if (emitNestedScopes)
+            {
+                EmitTryStatement(cg, emitCatchesOnly: true);
+            }
+            else
+            {
+                cg.GenerateScope(_body, (_finallyBlock ?? NextBlock).Ordinal);
+            }
+
+            //_tryNestingLevel--;
+            // Close the Try scope
+            cg.Builder.CloseLocalScope();
+
+            if (!emitNestedScopes)
+            {
+                EmitScriptDiedBlock(cg);
+
+                //
+                foreach (var catchBlock in _catchBlocks)
+                {
+                    EmitCatchBlock(cg, catchBlock);
+                }
+            }
+
+            if (!emitCatchesOnly && _finallyBlock != null)
+            {
+                cg.Builder.OpenLocalScope(ScopeType.Finally);
+                cg.GenerateScope(_finallyBlock, NextBlock.Ordinal);
+
+                // close Finally scope
+                cg.Builder.CloseLocalScope();
+            }
+            
+            // close the whole try statement scope
+            cg.Builder.CloseLocalScope();
+            
+            if (!emitCatchesOnly)
+            {
+                //
+                cg.Scope.ContinueWith(NextBlock);
+            }
+        }
+
+        void EmitScriptDiedBlock(CodeGenerator cg)
+        {
+            // handle ScriptDiedException (caused by die or exit) separately and rethrow the exception
+
+            // Template: catch (ScriptDiedException) { rethrow; }
+
+            cg.Builder.OpenLocalScope(ScopeType.Catch, cg.CoreTypes.ScriptDiedException.Symbol);
+            cg.Builder.EmitThrow(true);
+            cg.Builder.CloseLocalScope();
+        }
+
+        void EmitCatchBlock(CodeGenerator cg, CatchBlock catchBlock)
+        {
+            Debug.Assert(catchBlock.Variable.Variable != null);
+
+            if (catchBlock.ResolvedType == null)
+            {
+                throw new NotImplementedException("handle exception type dynamically"); // TODO: if (ex is ctx.ResolveType(ExceptionTypeName)) { ... }
+            }
+
+            var extype = catchBlock.ResolvedType;
+
+            cg.Builder.AdjustStack(1); // Account for exception on the stack.
+
+            cg.Builder.OpenLocalScope(ScopeType.Catch, (Microsoft.Cci.ITypeReference)extype);
+
+            // <tmp> = <ex>
+            var tmploc = cg.GetTemporaryLocal(extype);
+            cg.Builder.EmitLocalStore(tmploc);
+
+            var varplace = catchBlock.Variable.BindPlace(cg);
+            Debug.Assert(varplace != null);
+
+            // $x = <tmp>
+            varplace.EmitStorePrepare(cg);
+            cg.Builder.EmitLocalLoad(tmploc);
+            varplace.EmitStore(cg, (TypeSymbol)tmploc.Type);
+
+            //
+            cg.ReturnTemporaryLocal(tmploc);
+            tmploc = null;
+
+            //
+            cg.GenerateScope(catchBlock, NextBlock.Ordinal);
+
+            //
+            cg.Builder.CloseLocalScope();
         }
     }
 
     partial class ForeachEnumereeEdge
     {
+        LocalDefinition _enumeratorLoc;
+        MethodSymbol _moveNextMethod, _disposeMethod;
+        PropertySymbol _currentValue, _currentKey, _current;
+
+        internal void EmitMoveNext(CodeGenerator cg)
+        {
+            Debug.Assert(_enumeratorLoc != null);
+            Debug.Assert(_moveNextMethod != null);
+            Debug.Assert(_moveNextMethod.IsStatic == false);
+
+            if (_enumeratorLoc.Type.IsValueType)
+            {
+                // <locaddr>.MoveNext()
+                cg.Builder.EmitLocalAddress(_enumeratorLoc);
+            }
+            else
+            {
+                // <loc>.MoveNext()
+                cg.Builder.EmitLocalLoad(_enumeratorLoc);
+            }
+
+            cg.EmitCall(_enumeratorLoc.Type.IsValueType ? ILOpCode.Call : ILOpCode.Callvirt, _moveNextMethod)
+                .Expect(SpecialType.System_Boolean);
+        }
+
+        internal void EmitGetCurrent(CodeGenerator cg, BoundReferenceExpression valueVar, BoundReferenceExpression keyVar)
+        {
+            Debug.Assert(_enumeratorLoc != null);
+
+            var enumeratorPlace = new LocalPlace(_enumeratorLoc);
+
+            if (valueVar is BoundListEx)
+            {
+                throw new NotImplementedException();    // TODO: list(vars) = enumerator.GetCurrent()
+            }
+
+            if (_currentValue != null && _currentKey != null)
+            {
+                // special PhpArray enumerator
+
+                if (keyVar != null)
+                {
+                    //cg.EmitSequencePoint(keyVar.PhpSyntax);
+                    var keyTarget = keyVar.BindPlace(cg);
+                    keyTarget.EmitStorePrepare(cg);
+                    keyTarget.EmitStore(cg, cg.EmitGetProperty(enumeratorPlace, _currentKey));
+                }
+
+                //cg.EmitSequencePoint(valueVar.PhpSyntax);
+                var valueTarget = valueVar.BindPlace(cg);
+                valueTarget.EmitStorePrepare(cg);
+                valueTarget.EmitStore(cg, cg.EmitGetProperty(enumeratorPlace, _currentValue));
+            }
+            else
+            {
+                Debug.Assert(_current != null);
+
+                if (keyVar != null)
+                {
+                    throw new InvalidOperationException();
+                }
+
+                var valueTarget = valueVar.BindPlace(cg);
+                valueTarget.EmitStorePrepare(cg);
+                var t = cg.EmitGetProperty(enumeratorPlace, _current);  // TOOD: PhpValue.FromClr
+                valueTarget.EmitStore(cg, t);
+            }
+        }
+
+        void EmitDisposeAndClean(CodeGenerator cg)
+        {
+            // enumerator.Dispose()
+            if (_disposeMethod != null)
+            {
+                // TODO: if (enumerator != null)
+
+                if (_enumeratorLoc.Type.IsValueType)
+                    cg.Builder.EmitLocalAddress(_enumeratorLoc);
+                else
+                    cg.Builder.EmitLocalLoad(_enumeratorLoc);
+
+                cg.EmitCall(_disposeMethod.IsVirtual ? ILOpCode.Callvirt : ILOpCode.Call, _disposeMethod)
+                    .Expect(SpecialType.System_Void);
+            }
+
+            //// enumerator = null;
+            //if (!_enumeratorLoc.Type.IsValueType)
+            //{
+            //    cg.Builder.EmitNullConstant();
+            //    cg.Builder.EmitLocalStore(_enumeratorLoc);
+            //}
+
+            //
+            cg.ReturnTemporaryLocal(_enumeratorLoc);
+            _enumeratorLoc = null;
+
+            // unbind
+            _moveNextMethod = null;
+            _disposeMethod = null;
+            _currentValue = null;
+            _currentKey = null;
+            _current = null;
+        }
+
         internal override void Generate(CodeGenerator cg)
         {
-            throw new NotImplementedException();
+            Debug.Assert(this.Enumeree != null);
+
+            // get the enumerator,
+            // bind actual MoveNext() and CurrentValue and CurrentKey
+
+            // Template: using(
+            // a) enumerator = enumeree.GetEnumerator()
+            // b) enumerator = Operators.GetEnumerator(enumeree)
+            // ) ...
+
+            cg.EmitSequencePoint(this.Enumeree.PhpSyntax);
+
+            var enumereeType = cg.Emit(this.Enumeree);
+            Debug.Assert(enumereeType.SpecialType != SpecialType.System_Void);
+
+            var getEnumeratorMethod = enumereeType.LookupMember<MethodSymbol>(WellKnownMemberNames.GetEnumeratorMethodName);
+
+            TypeSymbol enumeratorType;
+
+            if (enumereeType.IsEqualToOrDerivedFrom(cg.CoreTypes.PhpArray))
+            {
+                cg.Builder.EmitBoolConstant(_aliasedValues);
+                
+                // PhpArray.GetForeachtEnumerator(bool)
+                enumeratorType = cg.EmitCall(ILOpCode.Callvirt, cg.CoreMethods.PhpArray.GetForeachEnumerator_Boolean);
+            }
+            // TODO: IPhpEnumerable
+            // TODO: Iterator
+            else if (getEnumeratorMethod != null && getEnumeratorMethod.ParameterCount == 0 && enumereeType.IsReferenceType)
+            {
+                // enumeree.GetEnumerator()
+                enumeratorType = cg.EmitCall(getEnumeratorMethod.IsVirtual ? ILOpCode.Callvirt : ILOpCode.Call, getEnumeratorMethod);
+            }
+            else
+            {
+                cg.EmitConvertToPhpValue(enumereeType, 0);
+                cg.Builder.EmitBoolConstant(_aliasedValues);
+                cg.EmitCallerRuntimeTypeHandle();
+
+                // Operators.GetForeachEnumerator(PhpValue, bool, RuntimeTypeHandle)
+                enumeratorType = cg.EmitCall(ILOpCode.Call, cg.CoreMethods.Operators.GetForeachEnumerator_PhpValue_Bool_RuntimeTypeHandle);
+            }
+
+            //
+            _current = enumeratorType.LookupMember<PropertySymbol>(WellKnownMemberNames.CurrentPropertyName);   // TODO: Err if no Current
+            _currentValue = enumeratorType.LookupMember<PropertySymbol>(_aliasedValues ? "CurrentValueAliased" : "CurrentValue");
+            _currentKey = enumeratorType.LookupMember<PropertySymbol>("CurrentKey");
+            _disposeMethod = enumeratorType.LookupMember<MethodSymbol>("Dispose", m => m.ParameterCount == 0 && !m.IsStatic);
+
+            //
+            _enumeratorLoc = cg.GetTemporaryLocal(enumeratorType);
+            cg.Builder.EmitLocalStore(_enumeratorLoc);
+
+            // bind methods
+            _moveNextMethod = enumeratorType.LookupMember<MethodSymbol>(WellKnownMemberNames.MoveNextMethodName);    // TODO: Err if there is no MoveNext()
+            Debug.Assert(_moveNextMethod.ReturnType.SpecialType == SpecialType.System_Boolean);
+            Debug.Assert(_moveNextMethod.IsStatic == false);
+
+            if (_disposeMethod != null)
+            {
+                /* Template: try { body } finally { enumerator.Dispose }
+                 */
+
+                // try {
+                cg.Builder.AssertStackEmpty();
+                cg.Builder.OpenLocalScope(ScopeType.TryCatchFinally);
+                cg.Builder.OpenLocalScope(ScopeType.Try);
+
+                //
+                EmitBody(cg);
+
+                // }
+                cg.Builder.CloseLocalScope();   // /Try
+
+                // finally {
+                cg.Builder.OpenLocalScope(ScopeType.Finally);
+
+                // enumerator.Dispose() & cleanup
+                EmitDisposeAndClean(cg);
+
+                // }
+                cg.Builder.CloseLocalScope();   // /Finally
+                cg.Builder.CloseLocalScope();   // /TryCatchFinally
+            }
+            else
+            {
+                EmitBody(cg);
+                EmitDisposeAndClean(cg);
+            }
+        }
+
+        void EmitBody(CodeGenerator cg)
+        {
+            Debug.Assert(NextBlock.NextEdge is ForeachMoveNextEdge);
+            cg.GenerateScope(NextBlock, NextBlock.NextEdge.NextBlock.Ordinal);
         }
     }
 
@@ -88,7 +410,36 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
     {
         internal override void Generate(CodeGenerator cg)
         {
-            throw new NotImplementedException();
+            /* Template:
+             *  for (;MoveNext(enumerator);)
+             *      $value = CurrentValue(enumerator);
+             *      $key = CurrentKey(enumerator);
+             *      {body}
+             *  }
+             */
+
+            var lblMoveNext = new object();
+            var lblBody = new object();
+            
+            //
+            cg.Builder.EmitBranch(ILOpCode.Br, lblMoveNext);
+            cg.Builder.MarkLabel(lblBody);
+
+            // $value, $key
+            this.EnumereeEdge.EmitGetCurrent(cg, this.ValueVariable, this.KeyVariable);
+
+            // {
+            cg.GenerateScope(this.BodyBlock, NextBlock.Ordinal);
+            // }
+
+            // if (enumerator.MoveNext())
+            //cg.EmitSequencePoint(this.Condition.PhpSyntax);
+            cg.Builder.MarkLabel(lblMoveNext);
+            this.EnumereeEdge.EmitMoveNext(cg); // bool
+            cg.Builder.EmitBranch(ILOpCode.Brtrue, lblBody);
+
+            //
+            cg.Scope.ContinueWith(NextBlock);
         }
     }
 
@@ -125,7 +476,7 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
                 //bool allconsts = this.CaseBlocks.All(c => c.IsDefault || c.CaseValue.ConstantValue.HasValue);
                 //bool allconstints = allconsts && this.CaseBlocks.All(c => c.IsDefault || IsInt32(c.CaseValue.ConstantValue.Value));
                 //bool allconststrings = allconsts && this.CaseBlocks.All(c => c.IsDefault || IsString(c.CaseValue.ConstantValue.Value));
-                
+
                 //if (allconstints)
                 //{
 
@@ -148,7 +499,7 @@ namespace Pchp.CodeAnalysis.Semantics.Graph
                         var this_block = this.CaseBlocks[i];
                         var next_case = (i + 1 < this.CaseBlocks.Length) ? this.CaseBlocks[i + 1] : null;
                         object next_mark = (object)next_case?.CaseValue ?? next_case ?? NextBlock;
-                        
+
                         if (!this_block.IsDefault)
                         {
                             // <CaseValue>:
